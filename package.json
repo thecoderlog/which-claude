@@ -1,0 +1,37 @@
+{
+  "name": "which-claude",
+  "version": "0.1.0",
+  "description": "Run your own coding task on each Claude model and see which one passes your check, how fast, and what it really costs.",
+  "type": "module",
+  "bin": {
+    "which-claude": "which-claude.mjs"
+  },
+  "files": [
+    "which-claude.mjs",
+    "agent.mjs",
+    "prices.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.310"
+  },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "agent-sdk",
+    "benchmark",
+    "opus",
+    "sonnet",
+    "haiku",
+    "coding-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thecoderlog/which-claude.git"
+  },
+  "license": "MIT"
+}
