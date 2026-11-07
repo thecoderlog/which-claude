@@ -7,6 +7,9 @@ with your own command, and shows how often each model passed, how long it took a
 cost. The number to look at is the **cost per passing run**: everything a model spent, divided by the
 runs that passed your check.
 
+It can also try one model at every effort level (`--sweep`) and tell you the lowest level that passed
+every run.
+
 ## Why
 
 The price list says Opus 5.5 costs twice what Sonnet 5.5 costs per token ($4 and $2 per million input
@@ -36,8 +39,8 @@ which-claude "Fix the date parsing bug in src/dates.js" --check "npm test"
 
 For every run, which-claude copies the folder into your temp folder, lets the agent work on the task
 there, then runs your check in that copy: exit code 0 means the run passed. By default Sonnet 5.5 and
-Opus 5.5 run three times each, one run at a time, taking turns (the order flips every round), and it
-all stops at $5.
+Opus 5.5 run three times each, one run at a time, taking turns (the starting model moves one place
+every round), and it all stops at $5.
 
 **A good check tests what you asked for, not just what's there.** The agent can read and change the
 tests in the folder, so a check it never sees is best. Keep it outside the folder:
@@ -49,6 +52,7 @@ tests in the folder, so a check it never sees is best. Keep it outside the folde
 | `--models <list>` | `sonnet,opus` | `sonnet`, `opus`, `haiku`, `fable` or any model id; `opus:high` sets one model's effort |
 | `--runs <n>` | `3` | runs per model |
 | `--effort <level>` | each model's own | `low`, `medium`, `high`, `xhigh` or `max` for every model |
+| `--sweep` | off | runs each model at all five levels, low to max, and prints the lowest level that passed every run |
 | `--max-dollars <usd>` | `5` | no run starts once the runs have cost this much, and a run stops if it would go past it |
 | `--timeout <minutes>` | `15` | a run that takes longer is stopped (it still passes if the check passes) |
 | `--setup <command>` | none | runs in each copy before the agent, like `npm ci`; not timed or billed |
@@ -58,7 +62,9 @@ tests in the folder, so a check it never sees is best. Keep it outside the folde
 ## What you get
 
 - A live table while it runs: each run's clock and running cost, then ✓ or ✗ from your check.
-- The scoreboard: runs passed, median time, turns and output tokens, money spent, cost per passing run.
+- The scoreboard: runs passed, median time, turns, output tokens and the thinking inside them, money
+  spent, cost per passing run.
+- The lowest effort level that passed every run, for each model (when the lanes have effort levels).
 - Where the money went: new input tokens, cache reads, cache writes, output, and the thinking inside
   the output.
 - In the results folder: `result.json` with every run (tokens, cost, the check's output, each tool
@@ -74,17 +80,70 @@ lanes.
 ## Effort
 
 Without `--effort`, each model runs at the default effort Claude Code gives it (the Agent SDK runs
-Claude Code's engine): **medium on Opus 5.5, Sonnet 5.5 and Haiku 5.5**. On the plain Claude API,
-Sonnet 5.5's default is high, so don't assume the two match. The table shows the level each lane
-really ran at. To compare levels in one go: `--models sonnet,opus,sonnet:high,opus:high`.
+Claude Code's engine): **medium on Opus 5.5, Sonnet 5.5 and Haiku 5.5**, high on Fable 5.1. On the
+plain Claude API, Sonnet 5.5's default is high, so don't assume the two match. The table shows the
+level each lane really ran at.
+
+To try every level of one model, use `--sweep`:
+
+```
+which-claude "Fix the date parsing bug in src/dates.js" --check "node ~/checks/dates.mjs" \
+  --models opus --sweep --runs 3 --max-dollars 30
+```
+
+That's five lanes (Opus at low, medium, high, xhigh and max), three runs each. To pick levels yourself,
+put them on the models: `--models opus:low,opus:high,fable:max`. Higher levels think more, and thinking
+is billed as output tokens, so max can cost many times what low does on the same task. Set
+`--max-dollars` with that in mind.
 
 Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model-config),
 [effort on the Claude API](https://platform.claude.com/docs/en/build-with-claude/effort).
 
-## Try it on the race from the video
+## Try it on the races from the videos
 
-`example/` has the small till app from the video and its hidden check: a `--split` flag with a
-rounding trap in the spec.
+`example/` has a small till app in two versions, each with a hidden check the agent never sees.
+
+### The effort race (week 18)
+
+`example/offers/` asks the till to apply this week's offers: 3 for 2, 2 for a price, any 3 from a
+group for a price, a percentage off, and one offer that ends on a date. Each item can only go in one
+offer, and the till has to pick the split that makes the bill lowest. `checks/offers.mjs` tries 14
+things, from that split to refusing a date that doesn't exist.
+
+```
+git clone https://github.com/thecoderlog/which-claude.git
+cd which-claude/example/offers
+git init -q && git add -A && git commit -qm "the till"
+which-claude "Apply this week's offers as described in docs/offers.md. Add tests." \
+  --check "node $PWD/../checks/offers.mjs" --models opus --sweep --runs 1 --max-dollars 10 --timeout 40
+```
+
+One run per level cost about $6.50 in our dry run, most of it at max (one max run took 24 minutes).
+Leave out `opus:max` and pick levels yourself to keep it cheap: `--models opus:low,opus:medium,opus:high`.
+
+What it printed for the video (2026-11-02, on a Mac mini; which-claude 0.2.0, Agent SDK 0.3.316; seven
+lanes, five runs each, $58.80 in all):
+
+```
+model       effort   passed   time    turns   tokens out   thinking   spent    per passing run
+Opus 5.5    low      5 of 5   1:07    7       6,366        948        $1.01    $0.203
+Opus 5.5    medium   5 of 5   1:36    8       10,077       2,466      $1.57    $0.314
+Opus 5.5    high     5 of 5   2:41    10      16,829       6,644      $2.29    $0.457
+Opus 5.5    xhigh    5 of 5   7:20    18      44,819       29,276     $6.52    $1.30
+Opus 5.5    max      5 of 5   21:54   49      138,062      107,397    $21.22   $4.24
+Fable 5.1   high     5 of 5   2:48    21      14,507       5,448      $5.51    $1.10
+Fable 5.1   max      5 of 5   14:00   28      59,297       47,557     $20.67   $4.13
+medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed
+▸ lowest level that passed every run: Opus 5.5 low, $0.203 per passing run
+▸ lowest level that passed every run: Fable 5.1 high, $1.10 per passing run
+```
+
+Every level passed here, so the cheapest one wins. In the dry run before it, Opus at low failed once:
+its code crashed on any basket without milk.
+
+### The model race (week 14)
+
+`example/till/` asks for a `--split` flag with a rounding trap in the spec.
 
 ```
 git clone https://github.com/thecoderlog/which-claude.git
@@ -109,7 +168,7 @@ Your numbers will be different. That's why it's a tool and not a chart.
 - Results change from run to run. One run proves nothing, and five is still a small sample.
 - A model that wins on one task can lose on yours. That's the point: measure your own.
 - The costs are the Agent SDK's own count at list prices. Your Console bill is the real one.
-- The running cost on screen uses [prices.mjs](prices.mjs) (checked on 2026-10-24); the cost a run
+- The running cost on screen uses [prices.mjs](prices.mjs) (checked on 2026-11-02); the cost a run
   ends with is the SDK's number.
 - The agent runs shell commands without asking, in a copy of your folder. A copy is not a sandbox:
   commands can still reach the rest of your machine and the network. Use it on code you trust, ideally

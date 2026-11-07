@@ -1,8 +1,8 @@
 // prices.mjs: list prices in US dollars per million tokens, from
-// https://platform.claude.com/docs/en/about-claude/pricing on 2026-10-24.
+// https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-02.
 // They only drive the running cost shown while a run is going. The cost a run ends with is the
 // Agent SDK's own count (total_cost_usd); your Console bill is the real one.
-export const PRICES_CHECKED = '2026-10-24';
+export const PRICES_CHECKED = '2026-11-02';
 
 export const MODELS = {
   'claude-opus-5-5':   { name: 'Opus 5.5',   alias: 'opus',   in: 4,    write5m: 5,     write1h: 8,    read: 0.20, out: 20 },
