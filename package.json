@@ -1,6 +1,6 @@
 {
   "name": "which-claude",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run your own coding task on each Claude model and see which one passes your check, how fast, and what it really costs.",
   "type": "module",
   "bin": {

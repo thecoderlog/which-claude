@@ -1,0 +1,10 @@
+[
+  { "sku": "MLK02", "label": "Oat milk 3 for 2", "buy": 3, "pay": 2 },
+  { "sku": "CHC07", "label": "Chocolate 2 for £3", "buy": 2, "price": "3.00" },
+  { "sku": "COF05", "label": "Coffee 10% off", "percentOff": 10 },
+  { "sku": "BRD01", "label": "Sourdough 2 for £5", "buy": 2, "price": "5.00" },
+  { "skus": ["BRD01", "CRS08", "BUN09"], "label": "Any 3 bakery for £5", "buy": 3, "price": "5.00" },
+  { "sku": "TEA06", "label": "Tea half price", "percentOff": 50, "until": "2026-10-31" },
+  { "sku": "BAN10", "label": "Bananas 20% off", "percentOff": 20 },
+  { "skus": ["APL03", "PER11", "BAN10"], "label": "Any 3 fruit for £5", "buy": 3, "price": "5.00" }
+]

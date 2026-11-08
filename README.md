@@ -8,7 +8,8 @@ cost. The number to look at is the **cost per passing run**: everything a model 
 runs that passed your check.
 
 It can also try one model at every effort level (`--sweep`) and tell you the lowest level that passed
-every run.
+every run, or climb from low one level at a time and stop at the first level that holds (`--climb`), so
+you only pay for the levels you need.
 
 ## Why
 
@@ -53,6 +54,7 @@ tests in the folder, so a check it never sees is best. Keep it outside the folde
 | `--runs <n>` | `3` | runs per model |
 | `--effort <level>` | each model's own | `low`, `medium`, `high`, `xhigh` or `max` for every model |
 | `--sweep` | off | runs each model at all five levels, low to max, and prints the lowest level that passed every run |
+| `--climb` | off | starts each model at low and moves up one level at a time; a level stops at its first failed run, and the climb stops at the first level that passes every run |
 | `--max-dollars <usd>` | `5` | no run starts once the runs have cost this much, and a run stops if it would go past it |
 | `--timeout <minutes>` | `15` | a run that takes longer is stopped (it still passes if the check passes) |
 | `--setup <command>` | none | runs in each copy before the agent, like `npm ci`; not timed or billed |
@@ -64,7 +66,9 @@ tests in the folder, so a check it never sees is best. Keep it outside the folde
 - A live table while it runs: each run's clock and running cost, then ✓ or ✗ from your check.
 - The scoreboard: runs passed, median time, turns, output tokens and the thinking inside them, money
   spent, cost per passing run.
-- The lowest effort level that passed every run, for each model (when the lanes have effort levels).
+- The lowest effort level that passed every run, for each model (when the lanes have effort levels),
+  or with `--climb`, the level each model held at, what the levels below it scored, and what the climb
+  cost.
 - Where the money went: new input tokens, cache reads, cache writes, output, and the thinking inside
   the output.
 - In the results folder: `result.json` with every run (tokens, cost, the check's output, each tool
@@ -91,7 +95,19 @@ which-claude "Fix the date parsing bug in src/dates.js" --check "node ~/checks/d
   --models opus --sweep --runs 3 --max-dollars 30
 ```
 
-That's five lanes (Opus at low, medium, high, xhigh and max), three runs each. To pick levels yourself,
+That's five lanes (Opus at low, medium, high, xhigh and max), three runs each.
+
+If you only want the cheapest level that holds, climb instead:
+
+```
+which-claude "Fix the date parsing bug in src/dates.js" --check "node ~/checks/dates.mjs" \
+  --models opus --climb --runs 3 --max-dollars 30
+```
+
+It runs low three times. If all three pass, it stops there. At the first failed run it moves up to
+medium, and so on. It never pays for max unless every level below it failed a run. A level that
+holds on your check is only as good as your check, so put the things you care about in it, like a
+big input with a time limit. To pick levels yourself,
 put them on the models: `--models opus:low,opus:high,fable:max`. Higher levels think more, and thinking
 is billed as output tokens, so max can cost many times what low does on the same task. Set
 `--max-dollars` with that in mind.
@@ -101,7 +117,38 @@ Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model
 
 ## Try it on the races from the videos
 
-`example/` has a small till app in two versions, each with a hidden check the agent never sees.
+`example/` has a small till app in several versions, each with a hidden check the agent never sees.
+
+### The effort staircase (week 22)
+
+`example/staircase/` has three harder versions of the till. The agent writes the offers from scratch
+and adds returns, fruit sold by weight, and a rounding helper that's already in the code (`c3`), then a
+£2 voucher where the cheapest bill can mean leaving an offer out (`c4`). `c6` adds a staff discount
+and one more page, `docs/speed.md`: up to 300 items across 200 rows, receipt in under a second.
+
+`checks/staircase.mjs` compares the whole receipt with a reference till on 30 to 46 baskets.
+`checks/bigorders.mjs` prints four big orders (a party, a café restock, 300 items, 200 rows) and
+wants the right total in 2 seconds. The c3 and c4 specs never mention size.
+
+```
+git clone https://github.com/thecoderlog/which-claude.git
+cd which-claude/example/staircase/c3
+git init -q && git add -A && git commit -qm "the till"
+which-claude "Apply this week's offers and add returns and weighed items, as described in docs/offers.md, docs/returns.md and docs/weighed.md. Add tests." \
+  --check "node $PWD/../checks/staircase.mjs c3 && node $PWD/../checks/bigorders.mjs c3" \
+  --models opus --climb --runs 3 --max-dollars 30 --timeout 45
+```
+
+What we found for the video (2026-11-08, on a Mac mini; which-claude 0.3.0, Agent SDK 0.3.316; Opus 5.5,
+90 runs over ten versions of the till, $167 in all):
+
+- Every level passed nearly everything the spec wrote down: 87 of 89 runs, and low 17 of 18.
+- On big orders the spec never mentioned (c1 to c5), low failed 10 of 11 runs, medium 8, high 3,
+  xhigh and max none. Low's code tried every way to group the offers, so it never finished on 300
+  items.
+- With the size written down (`c6`), low passed 3 of 3 at $0.69 per passing run. Max cost $6.69.
+
+Write the limits you care about into the spec and the check, then climb.
 
 ### The effort race (week 18)
 

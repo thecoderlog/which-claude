@@ -1,0 +1,8 @@
+sku,name,price,qty
+BRD01,Sourdough loaf,3.20,24
+CRS08,Croissant,1.90,18
+BUN09,Cinnamon bun,1.10,30
+MLK02,Oat milk 1L,1.85,60
+CHC07,Dark chocolate,1.95,40
+COF05,Ground coffee,6.75,6
+BRD01,Sourdough loaf,3.20,-3

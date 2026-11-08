@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { agent } from './agent.mjs';
 import { MODELS, PRICES_CHECKED, costOf, displayName, modelId } from './prices.mjs';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // Errors that the next run would hit too: stop instead of paying for them
 const FATAL = ['authentication_failed', 'billing_error', 'account_on_hold', 'verification_required', 'model_not_found',
@@ -39,6 +39,9 @@ check command runs there: exit code 0 means the run passed.
   --effort <level>      low, medium, high, xhigh or max for every model (default: each model's own)
   --sweep               run each model at every effort level, low to max, and print the lowest
                         level that passed every run
+  --climb               start each model at low and move up one level at a time; stop at the
+                        first level that passes every run (a level stops at its first fail), so
+                        you only pay for the levels you need
   --max-dollars <usd>   stop once the runs have cost this much (default: 5)
   --timeout <minutes>   give up on a run after this long (default: 15)
   --setup <command>     run in each copy before the agent starts, like "npm ci" (not timed or billed)
@@ -56,7 +59,7 @@ try {
       check: { type: 'string' }, models: { type: 'string', default: 'sonnet,opus' }, runs: { type: 'string', default: '3' },
       effort: { type: 'string' }, 'max-dollars': { type: 'string', default: '5' }, timeout: { type: 'string', default: '15' },
       setup: { type: 'string' }, out: { type: 'string' }, keep: { type: 'boolean', default: false },
-      sweep: { type: 'boolean', default: false },
+      sweep: { type: 'boolean', default: false }, climb: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
     },
   }));
@@ -76,6 +79,8 @@ const TIMEOUT_MS = Number(opts.timeout) * 60_000;
 if (!(TIMEOUT_MS > 0)) usage('--timeout must be a number of minutes');
 if (opts.effort && !EFFORTS.includes(opts.effort)) usage(`--effort must be one of ${EFFORTS.join(', ')}`);
 if (opts.sweep && opts.effort) usage('--sweep runs every effort level, so leave out --effort');
+if (opts.climb && opts.effort) usage('--climb picks the effort level itself, so leave out --effort');
+if (opts.climb && opts.sweep) usage('--climb and --sweep both pick the levels: use one of them');
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error('which-claude needs an API key: set ANTHROPIC_API_KEY (Claude Console > API keys). Every run is billed to it.');
   process.exit(2);
@@ -83,8 +88,8 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 // A lane is one model at one effort level. --sweep gives every model all five levels, low to max.
 const specs = opts.models.split(',').map(s => s.trim()).filter(Boolean).flatMap(spec => {
-  if (!opts.sweep) return [spec];
-  if (spec.includes(':')) usage(`"${spec}": --sweep sets the effort itself, so give just the model`);
+  if (!opts.sweep && !opts.climb) return [spec];
+  if (spec.includes(':')) usage(`"${spec}": ${opts.climb ? '--climb' : '--sweep'} sets the effort itself, so give just the model`);
   return EFFORTS.map(e => `${spec}:${e}`);
 });
 const lanes = specs.map((spec, i) => {
@@ -115,15 +120,21 @@ const sdkVersion = (() => {
 const info = {
   which_claude: VERSION, agent_sdk: sdkVersion, claude_code: null, node: process.version, platform: process.platform,
   started: new Date().toISOString(), finished: null, task, check: opts.check, setup: opts.setup ?? null, folder: cwd,
-  runs_per_model: RUNS, sweep: opts.sweep, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
-  order: 'one run at a time; the lanes take turns, and the order moves on one place every round', prices_checked: PRICES_CHECKED,
+  runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
+  order: opts.climb ? 'one run at a time; each model climbs from low, one level at a time, and stops at the first level that passes every run'
+    : 'one run at a time; the lanes take turns, and the order moves on one place every round', prices_checked: PRICES_CHECKED,
   stopped: null,
 };
 
 // Every run, in the order they happen: round 1 in the order given, then each round starts one lane
 // later (with two lanes that's the other way round), so no lane always goes first or last
 const runs = [];
-for (let n = 1; n <= RUNS; n++) {
+if (opts.climb) {
+  // --climb: each model in turn, its levels from low up, all the runs of a level before the next
+  for (const lane of lanes) for (let n = 1; n <= RUNS; n++) {
+    runs.push({ seq: runs.length + 1, lane: lane.i, model: lane.model, effort: lane.effort, n, status: 'waiting' });
+  }
+} else for (let n = 1; n <= RUNS; n++) {
   const k = (n - 1) % lanes.length;
   for (const lane of [...lanes.slice(k), ...lanes.slice(0, k)]) {
     runs.push({ seq: runs.length + 1, lane: lane.i, model: lane.model, effort: lane.effort, n, status: 'waiting' });
@@ -151,6 +162,11 @@ for (const r of runs) {
   if (spent() >= MAX) {
     info.stopped = `the runs cost ${usd(spent())}, the cap is ${usd(MAX)} (--max-dollars)`;
     break;
+  }
+  const skip = climbSkip(r);
+  if (skip) {
+    Object.assign(r, { status: 'skipped', skipped: skip });
+    continue;
   }
   try {
     await runOne(r);
@@ -286,6 +302,29 @@ async function runOne(r) {
   if (!opts.keep) rmSync(path.dirname(dir), { recursive: true, force: true, maxRetries: 3 });
 }
 
+// --climb: a run is skipped once its level has failed a run, or once a lower level of its model held
+function climbSkip(r) {
+  if (!opts.climb) return null;
+  const lane = lanes[r.lane];
+  const mine = runs.filter(x => x.lane === lane.i);
+  if (mine.some(x => ['fail', 'timeout', 'budget'].includes(x.status))) return 'this level already failed a run';
+  const lower = lanes.filter(l => l.model === lane.model && EFFORTS.indexOf(l.effort) < EFFORTS.indexOf(lane.effort));
+  if (lower.some(l => runs.filter(x => x.lane === l.i).every(x => x.status === 'pass'))) return 'a lower level already passed every run';
+  return null;
+}
+
+// --climb's answer for each model: the level it stopped at, and how each level below it did
+function climbResult() {
+  if (!opts.climb) return null;
+  return [...new Set(lanes.map(l => l.model))].map(model => {
+    const tried = lanes.filter(l => l.model === model).map(laneSummary).filter(s => s.runs > 0)
+      .map(s => ({ effort: s.effort, passed: s.passed, runs: s.runs, spent_usd: s.spent_usd }));
+    const held = lanes.filter(l => l.model === model).map(laneSummary).find(s => s.runs === RUNS && s.passed === RUNS);
+    return { model, name: displayName(model), effort: held?.effort ?? null, cost_per_passing_run: held?.cost_per_passing_run ?? null,
+      spent_usd: round(tried.reduce((t, x) => t + x.spent_usd, 0), 6), tried };
+  });
+}
+
 // ------------------------------------------------------------------ numbers
 function spent() {
   return runs.reduce((s, r) => s + (r.cost_usd ?? (r.status === 'running' ? r.running_usd ?? 0 : 0)), 0);
@@ -338,7 +377,7 @@ function lowestPassing() {
 
 function save() {
   const clean = runs.map(({ t0, now, running_usd, ...r }) => r);
-  const result = { ...info, spent_usd: round(spent(), 6), lanes: lanes.map(laneSummary), lowest_passing: lowestPassing(), runs: clean };
+  const result = { ...info, spent_usd: round(spent(), 6), lanes: lanes.map(laneSummary), lowest_passing: lowestPassing(), climb: climbResult(), runs: clean };
   writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2) + '\n');
 }
 
@@ -348,7 +387,9 @@ function printHeader() {
   console.log(fit(`${paint('1', 'which-claude')} ${VERSION} · Agent SDK ${sdkVersion}`, c));
   wrap(task, c - 8).forEach((line, i) => console.log(`${paint('2', i ? '     ' : 'task ')}  ${line}`));
   console.log(fit(`${paint('2', 'check')}  ${opts.check}`, c));
-  console.log(fit(paint('2', `${RUNS} run${RUNS > 1 ? 's' : ''} per ${lanes.some(l => l.effort) && new Set(lanes.map(l => l.model)).size < lanes.length ? 'lane' : 'model'}, one at a time, taking turns · stops at ${usd(MAX)}`), c));
+  console.log(fit(paint('2', opts.climb
+    ? `climbing from low: ${RUNS} run${RUNS > 1 ? 's' : ''} per level, up one level at the first fail · stops at ${usd(MAX)}`
+    : `${RUNS} run${RUNS > 1 ? 's' : ''} per ${lanes.some(l => l.effort) && new Set(lanes.map(l => l.model)).size < lanes.length ? 'lane' : 'model'}, one at a time, taking turns · stops at ${usd(MAX)}`), c));
   console.log();
 }
 
@@ -406,7 +447,7 @@ function printRun(r) {
 
 function printScoreboard() {
   const c = cols();
-  const rows = lanes.map(laneSummary);
+  const rows = lanes.map(laneSummary).filter(s => !opts.climb || s.runs > 0);
   const head = ['model', 'effort', 'passed', 'time', 'turns', 'tokens out', 'thinking', 'spent', 'per passing run'];
   const body = rows.map(s => [s.name, effortOf(s.effort, s.effort_applied),
     `${s.passed} of ${s.runs}`, s.median_seconds == null ? '-' : clock(s.median_seconds * 1000), s.median_turns ?? '-',
@@ -416,7 +457,14 @@ function printScoreboard() {
   console.log();
   printColumns(head, body, c, rows.map((_, i) => laneColor(i)));
   console.log(fit(paint('2', 'medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed'), c));
-  for (const lp of lowestPassing()) {
+  for (const cl of climbResult() ?? []) {
+    const below = cl.tried.filter(t => t.effort !== cl.effort).map(t => `${t.effort} ${t.passed} of ${t.runs}`).join(', ');
+    console.log(fit(cl.effort
+      ? `${paint('32', '▸')} climb: ${cl.name} holds at ${cl.effort}, ${usd(cl.cost_per_passing_run)} per passing run`
+        + (below ? ` (below it: ${below})` : '') + ` · the climb cost ${usd(cl.spent_usd)}`
+      : `${paint('31', '▸')} climb: ${cl.name} didn't hold at any level (${below}) · the climb cost ${usd(cl.spent_usd)}`, c));
+  }
+  for (const lp of opts.climb ? [] : lowestPassing()) {
     console.log(fit(lp.effort
       ? `${paint('32', '▸')} lowest level that passed every run: ${lp.name} ${lp.effort}, ${usd(lp.cost_per_passing_run)} per passing run`
       : `${paint('31', '▸')} ${lp.name}: no level passed every run`, c));

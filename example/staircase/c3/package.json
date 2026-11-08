@@ -1,0 +1,10 @@
+{
+  "name": "till",
+  "version": "0.3.0",
+  "description": "Prints a shop receipt from a cart file",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
