@@ -1,6 +1,6 @@
 {
   "name": "which-claude",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Run your own coding task on each Claude model and see which one passes your check, how fast, and what it really costs.",
   "type": "module",
   "bin": {
@@ -17,7 +17,7 @@
     "node": ">=18.17"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.316"
+    "@anthropic-ai/claude-agent-sdk": "0.3.322"
   },
   "keywords": [
     "claude",
@@ -27,6 +27,7 @@
     "opus",
     "sonnet",
     "haiku",
+    "fable",
     "coding-agent"
   ],
   "repository": {

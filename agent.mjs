@@ -1,15 +1,18 @@
 // agent.mjs: the coding agent every model runs, on the Claude Agent SDK. The same few options for
-// each model; only `model` and `effort` change between runs.
+// each model; only `model`, `effort` and the advisor change between runs.
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 export const SYSTEM_PROMPT = `You are a coding agent working in the current folder.
 Read the code before you change it, keep the change small,
 run the tests, and finish with a sentence or two on what you changed.`;
 
-export function agent({ task, model, effort, cwd, maxBudgetUsd, abortController, env, stderr, onEffort }) {
+export function agent({ task, model, effort, advisor, cwd, maxBudgetUsd, abortController, env, stderr, onEffort }) {
   const options = {
     model,
     ...(effort ? { effort } : {}),     // not set: the model's own default effort
+    // An advisor lane: Claude Code's server-side advisor tool with this model behind it. The model
+    // decides when to call it (Claude Code tells it how); the prompt and everything else stay the same.
+    ...(advisor ? { settings: { advisorModel: advisor } } : {}),
     cwd,
     systemPrompt: SYSTEM_PROMPT,
     tools: ['Read', 'Edit', 'Bash'],   // the only tools the model gets

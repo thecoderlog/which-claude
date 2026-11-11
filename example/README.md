@@ -1,7 +1,11 @@
 # The races from the videos
 
-Versions of the same small Node app that prints a shop receipt, each with a spec in `docs/` and a
-hidden check in `checks/`. A check runs the tests, then tries carts and options the agent never saw.
+`msw/` is the real bug from week 24: Mock Service Worker's "`resetHandlers()` doesn't restart the
+generator", with a hidden test that also checks the cut-off generator is closed. Its own
+[README](msw/README.md) has the steps.
+
+The other folders are versions of the same small Node app that prints a shop receipt, each with a
+spec in `docs/` and a hidden check in `checks/`. A check runs the tests, then tries carts and options the agent never saw.
 It prints one line per check and ends with `pass: ...` or `fail: ...`.
 
 `staircase/` is the effort staircase (week 22): three harder tills with the offers still to write.

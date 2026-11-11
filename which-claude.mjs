@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { agent } from './agent.mjs';
-import { MODELS, PRICES_CHECKED, costOf, displayName, modelId } from './prices.mjs';
+import { MODELS, PRICES_CHECKED, advisorCalls, costOf, displayName, modelId } from './prices.mjs';
 
-const VERSION = '0.3.0';
+const VERSION = '0.5.0';
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // Errors that the next run would hit too: stop instead of paying for them
 const FATAL = ['authentication_failed', 'billing_error', 'account_on_hold', 'verification_required', 'model_not_found',
@@ -28,13 +28,18 @@ const MARK = {
 const HELP = `which-claude ${VERSION}: run your coding task on each Claude model and compare them.
 
   which-claude "<task>" --check "<command>" [options]
+  which-claude --task-file <file> --check "<command>" [options]
 
 Each run gets a fresh copy of this folder. The agent works on the task in the copy, then your
 check command runs there: exit code 0 means the run passed.
 
   --check <command>     decides pass or fail, in each copy after the agent (required)
+  --task-file <file>    read the task from a file, for a long one like a pasted bug report
   --models <list>       sonnet, opus, haiku, fable or model ids, comma-separated; add :effort to
-                        one model, like opus:high (default: sonnet,opus)
+                        one model, like opus:high (default: sonnet,opus); haiku+opus is Haiku
+                        with Opus as its advisor (Claude Code's advisor tool)
+  --advisor <model>     also run every other model in --models with this one as its advisor:
+                        --models haiku,opus --advisor opus runs Haiku, Opus and Haiku + Opus
   --runs <n>            runs per model (default: 3)
   --effort <level>      low, medium, high, xhigh or max for every model (default: each model's own)
   --sweep               run each model at every effort level, low to max, and print the lowest
@@ -58,7 +63,7 @@ try {
     options: {
       check: { type: 'string' }, models: { type: 'string', default: 'sonnet,opus' }, runs: { type: 'string', default: '3' },
       effort: { type: 'string' }, 'max-dollars': { type: 'string', default: '5' }, timeout: { type: 'string', default: '15' },
-      setup: { type: 'string' }, out: { type: 'string' }, keep: { type: 'boolean', default: false },
+      setup: { type: 'string' }, out: { type: 'string' }, 'task-file': { type: 'string' }, keep: { type: 'boolean', default: false }, advisor: { type: 'string' },
       sweep: { type: 'boolean', default: false }, climb: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
     },
@@ -69,8 +74,13 @@ try {
 if (opts.help) { console.log(HELP); process.exit(0); }
 if (opts.version) { console.log(VERSION); process.exit(0); }
 
-const task = positionals.join(' ').trim();
-if (!task) usage('say what the task is, in quotes');
+let task = positionals.join(' ').trim();
+if (opts['task-file']) {
+  if (task) usage('give the task in quotes or with --task-file, not both');
+  try { task = readFileSync(opts['task-file'], 'utf8').trim(); } catch { usage(`--task-file ${opts['task-file']}: can't read that file`); }
+  if (!task) usage(`--task-file ${opts['task-file']} is empty`);
+}
+if (!task) usage('say what the task is, in quotes (or --task-file <file>)');
 if (!opts.check) usage('--check is missing: the command that says whether a run passed (exit code 0)');
 const RUNS = whole(opts.runs, '--runs');
 const MAX = Number(opts['max-dollars']);
@@ -86,21 +96,34 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(2);
 }
 
-// A lane is one model at one effort level. --sweep gives every model all five levels, low to max.
-const specs = opts.models.split(',').map(s => s.trim()).filter(Boolean).flatMap(spec => {
+// A lane is one model at one effort level, alone or with an advisor. --sweep gives every model all five levels, low to max.
+const given = opts.models.split(',').map(s => s.trim()).filter(Boolean);
+if (opts.advisor) {
+  const adv = modelId(opts.advisor);
+  if (!MODELS[adv] && !adv.startsWith('claude-')) usage(`--advisor ${opts.advisor}: not a model name or id`);
+  for (const spec of [...given]) {
+    const [name] = spec.split(':');
+    if (!name.includes('+') && modelId(name) !== adv) given.push(spec.replace(name, `${name}+${opts.advisor}`));
+  }
+}
+const specs = given.flatMap(spec => {
   if (!opts.sweep && !opts.climb) return [spec];
   if (spec.includes(':')) usage(`"${spec}": ${opts.climb ? '--climb' : '--sweep'} sets the effort itself, so give just the model`);
   return EFFORTS.map(e => `${spec}:${e}`);
 });
 const lanes = specs.map((spec, i) => {
-  const [name, effort = opts.effort] = spec.split(':');
+  const [pair, effort = opts.effort] = spec.split(':');
   if (effort && !EFFORTS.includes(effort)) usage(`"${spec}": effort must be one of ${EFFORTS.join(', ')}`);
+  const [name, adv, extra] = pair.split('+');
+  if (extra !== undefined || adv === '') usage(`"${spec}": a lane is a model, or a model+advisor like haiku+opus`);
   const model = modelId(name);
-  return { i, model, effort: effort || null, name: displayName(model), applied: null };
+  const advisor = adv ? modelId(adv) : null;
+  const short = id => displayName(id).replace(/ [\d.]+$/, '');  // "Opus 5.5" -> "Opus"
+  return { i, model, advisor, effort: effort || null, name: displayName(model) + (advisor ? ` + ${short(advisor)}` : ''), applied: null };
 });
 if (!lanes.length) usage('--models is empty');
 for (const l of lanes) {
-  const same = lanes.filter(x => x.name === l.name && x.effort === l.effort);
+  const same = lanes.filter(x => x.name === l.name && x.effort === l.effort && x.advisor === l.advisor);
   if (same.length > 1) l.name += ` #${same.indexOf(l) + 1}`;
 }
 
@@ -120,7 +143,7 @@ const sdkVersion = (() => {
 const info = {
   which_claude: VERSION, agent_sdk: sdkVersion, claude_code: null, node: process.version, platform: process.platform,
   started: new Date().toISOString(), finished: null, task, check: opts.check, setup: opts.setup ?? null, folder: cwd,
-  runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
+  advisor: opts.advisor ?? null, runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
   order: opts.climb ? 'one run at a time; each model climbs from low, one level at a time, and stops at the first level that passes every run'
     : 'one run at a time; the lanes take turns, and the order moves on one place every round', prices_checked: PRICES_CHECKED,
   stopped: null,
@@ -215,6 +238,7 @@ async function runOne(r) {
   r.events = [];
   r.cost_curve = [];
   r.now = 'starting';
+  if (lane.advisor) r.advisor = { model: lane.advisor, calls: [], seen: 0 };
   const transcript = path.join(out, 'transcripts', `${tag}.jsonl`);
   const ac = new AbortController();
   current = { r, ac };
@@ -222,7 +246,7 @@ async function runOne(r) {
   const usageById = new Map();
   try {
     const messages = agent({
-      task, model: lane.model, effort: lane.effort ?? undefined, cwd: dir, abortController: ac,
+      task, model: lane.model, effort: lane.effort ?? undefined, advisor: lane.advisor ?? undefined, cwd: dir, abortController: ac,
       maxBudgetUsd: Math.max(0.01, MAX - spent()),
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `which-claude/${VERSION}` },
       stderr: data => appendFileSync(path.join(out, 'transcripts', `${tag}.stderr.txt`), data),
@@ -241,8 +265,19 @@ async function runOne(r) {
         if (ev.type === 'message_delta' && usageById.has(replyId)) {
           for (const [k, v] of Object.entries(ev.usage ?? {})) if (v != null) usageById.get(replyId)[k] = v;
         }
+        if (r.advisor && ev.type === 'content_block_start') {
+          const b = ev.content_block ?? {};
+          if (b.type === 'server_tool_use' && b.name === 'advisor') {
+            r.advisor.seen++;
+            r.events.push({ t, advisor: 'call' });
+            r.now = `advisor  ${displayName(lane.advisor)} reads the whole run so far`;
+          } else if (b.type === 'advisor_tool_result') {
+            r.events.push({ t, advisor: b.content?.type ?? 'result', error: b.content?.error_code });
+          }
+        }
         if (ev.type === 'message_start' || ev.type === 'message_delta') {
-          r.running_usd = [...usageById.values()].reduce((s, u) => s + (costOf(lane.model, u) ?? 0), 0);
+          r.running_usd = [...usageById.values()].reduce((s, u) => s + (costOf(lane.model, u) ?? 0)
+            + advisorCalls(u).reduce((a, c) => a + c.usd, 0), 0);
           r.cost_curve.push([t, round(r.running_usd, 6)]);
         }
         continue;
@@ -251,6 +286,7 @@ async function runOne(r) {
       if (msg.type === 'system' && msg.subtype === 'init') {
         r.session_id = msg.session_id;
         r.api_key_source = msg.apiKeySource;
+        r.analytics_disabled = msg.analytics_disabled ?? null;
         info.claude_code ??= msg.claude_code_version;
       }
       if (msg.type === 'assistant') {
@@ -263,6 +299,9 @@ async function runOne(r) {
             r.events.push({ t, text: b.text.slice(0, 500) });
           }
         }
+      }
+      if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
+        for (const b of msg.message.content) if (b.type === 'tool_result' && b.is_error) r.events.push({ t, tool_error: true });
       }
       if (msg.type === 'result') {
         r.result = {
@@ -283,6 +322,23 @@ async function runOne(r) {
   r.cost_usd = r.result?.total_cost_usd ?? round(r.running_usd ?? 0, 6);
   r.cost_is_estimate = !r.result;
   r.tokens = tokens(r.result?.model_usage);
+  if (r.advisor) {
+    // every advisor call: when it started, what came back, and its own bill (from usage.iterations, in order)
+    const billed = [...usageById.values()].flatMap(u => advisorCalls(u));
+    const starts = r.events.filter(e => e.advisor === 'call');
+    const ends = r.events.filter(e => e.advisor && e.advisor !== 'call');
+    const n = Math.max(starts.length, billed.length);
+    r.advisor.calls = Array.from({ length: n }, (_, k) => ({
+      t: starts[k]?.t ?? null, tools_before: starts[k] ? r.events.filter(e => e.tool && e.t <= starts[k].t).length : null,
+      edits_before: starts[k] ? r.events.filter(e => e.tool === 'Edit' && e.t <= starts[k].t).length : null,
+      ms: starts[k] && ends[k] ? ends[k].t - starts[k].t : null,
+      came_back: ends[k]?.advisor ?? null, error: ends[k]?.error ?? null, ...(billed[k] ?? {}),
+    }));
+    r.advisor.usd = round(billed.reduce((a, c) => a + c.usd, 0), 6);
+    r.advisor.input_tokens = billed.reduce((a, c) => a + c.input_tokens + c.cache_read + c.cache_write, 0);
+    r.advisor.output_tokens = billed.reduce((a, c) => a + c.output_tokens, 0);
+    delete r.advisor.seen;
+  }
 
   r.fatal = Boolean((r.api_error && FATAL.includes(r.api_error)) || [401, 403].includes(r.result?.api_error_status)
     || (r.crash && !r.result));
@@ -357,6 +413,12 @@ function laneSummary(lane) {
     spent_usd: round(cost, 6), cost_per_passing_run: passed ? round(cost / passed, 6) : null,
     tokens: { input: sum('input'), cache_read: sum('cache_read'), cache_write: sum('cache_write'), output: sum('output'), thinking: sum('thinking') },
     list_price_per_mtok: MODELS[lane.model] ? { in: MODELS[lane.model].in, out: MODELS[lane.model].out } : null,
+    advisor: lane.advisor, advisor_name: lane.advisor ? displayName(lane.advisor) : null,
+    ...(lane.advisor ? {
+      advisor_calls_per_run: done.map(r => r.advisor?.calls.length ?? 0),
+      median_advisor_calls: median(done.map(r => r.advisor?.calls.length ?? 0)),
+      advisor_usd: round(mine.reduce((s, r) => s + (r.advisor?.usd ?? 0), 0), 6),
+    } : {}),
   };
 }
 
@@ -385,8 +447,14 @@ function save() {
 function printHeader() {
   const c = cols();
   console.log(fit(`${paint('1', 'which-claude')} ${VERSION} · Agent SDK ${sdkVersion}`, c));
-  wrap(task, c - 8).forEach((line, i) => console.log(`${paint('2', i ? '     ' : 'task ')}  ${line}`));
+  // a long task (a pasted bug report from --task-file) shows its first lines only; result.json has all of it
+  const shown = task.split('\n').map(l => l.trim()).filter(Boolean);
+  const head = shown.length > 3 ? [...shown.slice(0, 2), `… ${shown.length - 2} more lines${opts['task-file'] ? ` in ${opts['task-file']}` : ''}`] : shown;
+  head.flatMap(l => wrap(l, c - 8)).forEach((line, i) => console.log(`${paint('2', i ? '     ' : 'task ')}  ${line}`));
   console.log(fit(`${paint('2', 'check')}  ${opts.check}`, c));
+  for (const l of lanes.filter(x => x.advisor)) {
+    console.log(fit(paint('2', `adv    ${l.name}: ${displayName(l.model)} does the work and calls ${displayName(l.advisor)} when it decides to`), c));
+  }
   console.log(fit(paint('2', opts.climb
     ? `climbing from low: ${RUNS} run${RUNS > 1 ? 's' : ''} per level, up one level at the first fail · stops at ${usd(MAX)}`
     : `${RUNS} run${RUNS > 1 ? 's' : ''} per ${lanes.some(l => l.effort) && new Set(lanes.map(l => l.model)).size < lanes.length ? 'lane' : 'model'}, one at a time, taking turns · stops at ${usd(MAX)}`), c));
@@ -423,7 +491,9 @@ function table(c) {
   for (const l of lanes) {
     const cells = [];
     for (let n = 1; n <= RUNS; n++) cells.push(cell(runs.find(r => r.lane === l.i && r.n === n), style, cellW));
-    lines.push(fit(`${paint(laneColor(l.i), pad(l.name, nameW))}  ${paint('2', pad(effortText(l), effW))}  ${cells.join('')}`, c));
+    const calls = l.advisor ? runs.filter(r => r.lane === l.i).reduce((s, r) => s + (r.advisor ? (r.advisor.calls.length || r.events?.filter(e => e.advisor === 'call').length || 0) : 0), 0) : null;
+    lines.push(fit(`${paint(laneColor(l.i), pad(l.name, nameW))}  ${paint('2', pad(effortText(l), effW))}  ${cells.join('')}`
+      + (calls === null ? '' : paint('35', `advisor calls ${calls}`)), c));
   }
   return lines;
 }
@@ -448,15 +518,22 @@ function printRun(r) {
 function printScoreboard() {
   const c = cols();
   const rows = lanes.map(laneSummary).filter(s => !opts.climb || s.runs > 0);
-  const head = ['model', 'effort', 'passed', 'time', 'turns', 'tokens out', 'thinking', 'spent', 'per passing run'];
+  const withAdv = rows.some(s => s.advisor);
+  // with an advisor lane, the token columns make room for the advisor's (the tokens table below still has them)
+  const head = ['model', 'effort', 'passed', 'time', 'turns', ...(withAdv ? ['adv calls', 'adv $'] : ['tokens out', 'thinking']), 'spent', 'per passing run'];
   const body = rows.map(s => [s.name, effortOf(s.effort, s.effort_applied),
     `${s.passed} of ${s.runs}`, s.median_seconds == null ? '-' : clock(s.median_seconds * 1000), s.median_turns ?? '-',
-    s.median_output_tokens == null ? '-' : num(s.median_output_tokens),
-    s.median_thinking_tokens == null ? '-' : num(s.median_thinking_tokens), usd(s.spent_usd),
+    ...(withAdv ? (s.advisor ? [s.advisor_calls_per_run.join(' ') || '-', usd(s.advisor_usd)] : ['-', '-'])
+      : [s.median_output_tokens == null ? '-' : num(s.median_output_tokens), s.median_thinking_tokens == null ? '-' : num(s.median_thinking_tokens)]), usd(s.spent_usd),
     s.cost_per_passing_run == null ? 'none passed' : usd(s.cost_per_passing_run)]);
   console.log();
   printColumns(head, body, c, rows.map((_, i) => laneColor(i)));
-  console.log(fit(paint('2', 'medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed'), c));
+  console.log(fit(paint('2', withAdv ? 'medians · adv calls: advisor calls in each run · spent includes the advisor · per passing run = spent ÷ runs that passed'
+    : 'medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed'), c));
+  for (const s of rows.filter(x => x.advisor && x.runs > 0 && x.advisor_calls_per_run.every(n => n === 0))) {
+    console.log(fit(paint('31', `▸ ${s.name}: no run called the advisor. Claude Code leaves it off without a word if the API refuses the pairing `
+      + 'or if feature-flag fetching is off (DISABLE_TELEMETRY and the like)'), c));
+  }
   for (const cl of climbResult() ?? []) {
     const below = cl.tried.filter(t => t.effort !== cl.effort).map(t => `${t.effort} ${t.passed} of ${t.runs}`).join(', ');
     console.log(fit(cl.effort

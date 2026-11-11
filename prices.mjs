@@ -1,8 +1,9 @@
 // prices.mjs: list prices in US dollars per million tokens, from
-// https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-02.
+// https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-10.
+// Advisor calls are billed at the advisor model's prices (they're in usage.iterations, not the top-level usage).
 // They only drive the running cost shown while a run is going. The cost a run ends with is the
 // Agent SDK's own count (total_cost_usd); your Console bill is the real one.
-export const PRICES_CHECKED = '2026-11-02';
+export const PRICES_CHECKED = '2026-11-10';
 
 export const MODELS = {
   'claude-opus-5-5':   { name: 'Opus 5.5',   alias: 'opus',   in: 4,    write5m: 5,     write1h: 8,    read: 0.20, out: 20 },
@@ -10,7 +11,8 @@ export const MODELS = {
   'claude-haiku-5-5':  { name: 'Haiku 5.5',  alias: 'haiku',  in: 0.10, write5m: 0.125, write1h: 0.20, read: 0.01, out: 0.50,
                          // prompts over 100K tokens
                          long: { over: 100_000, in: 0.50, write5m: 0.625, write1h: 1, read: 0.05, out: 2.50 } },
-  'claude-fable-5-1':  { name: 'Fable 5.1',  alias: 'fable',  in: 10,   write5m: 12.50, write1h: 20,   read: 0.25, out: 50 },
+  'claude-fable-5-2':  { name: 'Fable 5.2',  alias: 'fable',  in: 8,    write5m: 10,    write1h: 16,   read: 0.20, out: 40 },
+  'claude-fable-5-1':  { name: 'Fable 5.1',  alias: 'fable-5.1', in: 10, write5m: 12.50, write1h: 20,  read: 0.25, out: 50 },
 };
 
 export function modelId(nameOrAlias) {
@@ -31,4 +33,14 @@ export function costOf(id, usage) {
   if (p.long && prompt > p.long.over) p = p.long;
   return ((usage.input_tokens ?? 0) * p.in + (usage.cache_read_input_tokens ?? 0) * p.read
     + w5m * p.write5m + w1h * p.write1h + (usage.output_tokens ?? 0) * p.out) / 1e6;
+}
+
+// What the advisor calls inside one API response cost: each `advisor_message` entry in usage.iterations is one
+// call, billed at its own model's prices (the top-level usage only counts the main model's tokens)
+export function advisorCalls(usage) {
+  return (usage?.iterations ?? []).filter(x => x?.type === 'advisor_message').map(x => ({
+    model: x.model ?? null, input_tokens: x.input_tokens ?? 0, cache_read: x.cache_read_input_tokens ?? 0,
+    cache_write: x.cache_creation_input_tokens ?? 0, output_tokens: x.output_tokens ?? 0,
+    usd: costOf(modelId(x.model), x) ?? 0,
+  }));
 }

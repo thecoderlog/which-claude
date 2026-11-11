@@ -43,14 +43,16 @@ there, then runs your check in that copy: exit code 0 means the run passed. By d
 Opus 5.5 run three times each, one run at a time, taking turns (the starting model moves one place
 every round), and it all stops at $5.
 
-**A good check tests what you asked for, not just what's there.** The agent can read and change the
-tests in the folder, so a check it never sees is best. Keep it outside the folder:
+Make the check test what you asked for. The agent can read and change the tests in the folder, so
+the best check is one it never sees. Keep it outside the folder:
 `--check "node ~/checks/dates.mjs"`.
 
 | Option | Default | What it does |
 |---|---|---|
 | `--check <command>` | required | decides pass or fail; runs in each copy after the agent |
-| `--models <list>` | `sonnet,opus` | `sonnet`, `opus`, `haiku`, `fable` or any model id; `opus:high` sets one model's effort |
+| `--task-file <file>` | none | reads the task from a file, for a long one like a pasted bug report |
+| `--models <list>` | `sonnet,opus` | `sonnet`, `opus`, `haiku`, `fable` (Fable 5.2) or any model id; `opus:high` sets one model's effort; `haiku+opus` is Haiku with Opus as its advisor |
+| `--advisor <model>` | none | also runs every other model in `--models` with this one as its advisor |
 | `--runs <n>` | `3` | runs per model |
 | `--effort <level>` | each model's own | `low`, `medium`, `high`, `xhigh` or `max` for every model |
 | `--sweep` | off | runs each model at all five levels, low to max, and prints the lowest level that passed every run |
@@ -84,7 +86,7 @@ lanes.
 ## Effort
 
 Without `--effort`, each model runs at the default effort Claude Code gives it (the Agent SDK runs
-Claude Code's engine): **medium on Opus 5.5, Sonnet 5.5 and Haiku 5.5**, high on Fable 5.1. On the
+Claude Code's engine): medium on Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.2 (Fable 5.1 ran at high). On the
 plain Claude API, Sonnet 5.5's default is high, so don't assume the two match. The table shows the
 level each lane really ran at.
 
@@ -117,7 +119,55 @@ Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model
 
 ## Try it on the races from the videos
 
-`example/` has a small till app in several versions, each with a hidden check the agent never sees.
+`example/` has a small till app in several versions and one real bug from an open source library, each
+with a hidden check the agent never sees.
+
+### A real bug, Opus against Fable (week 24)
+
+`example/msw/` is the bug "`resetHandlers()` doesn't restart the generator" in
+[Mock Service Worker](https://github.com/mswjs/msw). Cognition's
+[FrontierCode 2.0 post](https://cognition.com/blog/frontier-code-2.0) shows it as a sample task.
+`get-msw.sh` fetches the library as it was the day before the fix, as one commit with no history, and
+builds it. `PROMPT.md` is the bug report, then "Fix it."
+
+`check.mjs` is a hidden test we wrote for the video. FrontierCode grades the task its own way, so a
+pass here isn't a FrontierCode score. Three of its tests cover what the report asks for: after `resetHandlers()` the generator
+starts again from the top. The other four check something the report never mentions: the generator that was cut off
+has to be closed, so its `finally` block runs. The repo's own 100 reset and handler tests have to
+stay green as well.
+
+```
+git clone https://github.com/thecoderlog/which-claude.git
+cd which-claude/example/msw
+./get-msw.sh                      # about 3 minutes and 500 MB
+cd repo
+which-claude --task-file ../PROMPT.md --check "node $PWD/../check.mjs" \
+  --models opus,fable --runs 1 --max-dollars 4 --timeout 20
+```
+
+What we found for the video (2026-11-10, on a Mac mini). These runs went through Claude Code 2.1.322 on
+a Max plan with the same prompt and the same check, so the dollar figures are list prices worked out
+from the token counts:
+
+- Opus 5.5 at medium passed 1 of 5 runs, at about $0.44 a run.
+- Fable 5.2 at medium passed 0 of 5, at about $0.88 a run. At high it passed 0 of 5 again, and one
+  run at max failed after 34 minutes and $17.71.
+- All 15 failed runs failed the same way: `restart ok`, `cleanup FAIL`. Each one dropped the old
+  generator without closing it, and each run's own tests were green.
+
+which-claude 0.5.0 itself, one run each (2026-11-11, Agent SDK 0.3.322, $0.774 in all):
+
+```
+model       effort             passed   time   turns   tokens out   thinking   spent    per passing run
+Opus 5.5    medium (default)   0 of 1   0:54   17      4,063        591        $0.203   none passed
+Fable 5.2   medium (default)   0 of 1   2:15   14      6,460        1,977      $0.570   none passed
+
+✗ Opus 5.5 run 1: fail: restart ok (3 of 3), cleanup FAIL (1 of 4)
+✗ Fable 5.2 run 1: fail: restart ok (3 of 3), cleanup FAIL (1 of 4)
+```
+
+That's 18 runs of one bug over two days. Before you switch your default model, run it on a task of
+your own.
 
 ### The effort staircase (week 22)
 
@@ -215,7 +265,7 @@ Your numbers will be different. That's why it's a tool and not a chart.
 - Results change from run to run. One run proves nothing, and five is still a small sample.
 - A model that wins on one task can lose on yours. That's the point: measure your own.
 - The costs are the Agent SDK's own count at list prices. Your Console bill is the real one.
-- The running cost on screen uses [prices.mjs](prices.mjs) (checked on 2026-11-02); the cost a run
+- The running cost on screen uses [prices.mjs](prices.mjs) (checked on 2026-11-10); the cost a run
   ends with is the SDK's number.
 - The agent runs shell commands without asking, in a copy of your folder. A copy is not a sandbox:
   commands can still reach the rest of your machine and the network. Use it on code you trust, ideally
