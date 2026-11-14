@@ -7,7 +7,8 @@ with your own command, and shows how often each model passed, how long it took a
 cost. The number to look at is the **cost per passing run**: everything a model spent, divided by the
 runs that passed your check.
 
-It can also try one model at every effort level (`--sweep`) and tell you the lowest level that passed
+It can also run one model with and without a line in its system prompt (`--prompt-lane`), so you can
+see what that line really changes on your task. And it can try one model at every effort level (`--sweep`) and tell you the lowest level that passed
 every run, or climb from low one level at a time and stop at the first level that holds (`--climb`), so
 you only pay for the levels you need.
 
@@ -53,6 +54,8 @@ the best check is one it never sees. Keep it outside the folder:
 | `--task-file <file>` | none | reads the task from a file, for a long one like a pasted bug report |
 | `--models <list>` | `sonnet,opus` | `sonnet`, `opus`, `haiku`, `fable` (Fable 5.2) or any model id; `opus:high` sets one model's effort; `haiku+opus` is Haiku with Opus as its advisor |
 | `--advisor <model>` | none | also runs every other model in `--models` with this one as its advisor |
+| `--prompt-lane <name>=<text>` | none | also runs every model with `<text>` added to the end of its system prompt, as the lane "model + name"; `<name>=@<file>` reads the text from a file; give it more than once for more lanes |
+| `--claude-code-prompt` | off | every lane starts from Claude Code's own system prompt and tools instead of which-claude's short one |
 | `--runs <n>` | `3` | runs per model |
 | `--effort <level>` | each model's own | `low`, `medium`, `high`, `xhigh` or `max` for every model |
 | `--sweep` | off | runs each model at all five levels, low to max, and prints the lowest level that passed every run |
@@ -81,7 +84,28 @@ the best check is one it never sees. Keep it outside the folder:
 Every model gets the same small agent, [agent.mjs](agent.mjs): a three-line system prompt, the Read,
 Edit and Bash tools, edits and commands allowed without asking, and nothing from your own setup: no
 CLAUDE.md, settings files, MCP servers, plugins or skills. Only `model` and `effort` change between
-lanes.
+lanes, plus a prompt lane's extra text (below). With `--claude-code-prompt` every lane starts from
+Claude Code's own system prompt and tools instead (the Agent SDK's `claude_code` preset), still with
+nothing from your own setup.
+
+## Prompt lanes
+
+Prompting guides often say one line changes how a model works. A prompt lane checks that claim on your
+own code. It runs the same model twice, once as it is and once with the line added to the end of the
+system prompt, the way Claude Code's `--append-system-prompt` adds it.
+
+```
+which-claude "Add delivery slips as described in docs/delivery.md. Add tests." \
+  --check "node ~/checks/slips.mjs" --models fable:medium --claude-code-prompt \
+  --prompt-lane owner="You are the owner and long-term maintainer of this codebase, and its design is up to you."
+```
+
+That's two lanes, Fable 5.2 and Fable 5.2 + owner, taking turns. Everything else stays the same, so the
+difference in the scoreboard is that one line. Use `--claude-code-prompt` when the line is meant for
+Claude Code: on which-claude's own three-line prompt ("keep the change small") a line about scope can
+behave differently. For a longer block, put it in a file: `--prompt-lane finish=@finishing-work.md`.
+Give `--prompt-lane` more than once to compare several lines in one go; every model in `--models` gets
+every prompt lane.
 
 ## Effort
 
@@ -121,6 +145,44 @@ Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model
 
 `example/` has a small till app in several versions and one real bug from an open source library, each
 with a hidden check the agent never sees.
+
+### One sentence in the prompt (week 25)
+
+Anthropic's guide to prompting Fable 5.2 says one sentence ("You are the owner and long-term
+maintainer of this codebase, and its design is up to you.") makes it clean up duplicated code far more
+often. `owner/` is the till with its age-limit rule in two places: `src/receipt.js` exports it, and
+`src/selfcheck.js` keeps its own reworded copy. The task, delivery slips, needs the rule a third time
+and never mentions the copies. `checks/owner.mjs` compares the slip and the till's old output byte for
+byte on carts the agent never saw, counts the files that still hold the rule, and passes only when
+the slip is right, nothing old changed, and the rule ends up in one place. A fail that says
+`copies 2` is a correct slip that left the copy alone.
+
+```
+cd example/owner
+git init -q && git add -A && git commit -qm "the till"
+which-claude "Add delivery slips as described in docs/delivery.md. Add tests." \
+  --check "node $PWD/../checks/owner.mjs" --models fable:medium --claude-code-prompt \
+  --prompt-lane owner="You are the owner and long-term maintainer of this codebase, and its design is up to you." \
+  --runs 4 --max-dollars 10
+```
+
+In the video (Claude Code 2.1.322 on a Max plan, Fable 5.2 at medium) the plain prompt merged the copy
+in 0 of 8 runs and the owner sentence in 8 of 8, for about a quarter more output tokens. With "No
+drive-by refactors, renames or cleanups." in front of the sentence it was 0 of 6.
+
+which-claude 0.6.0 itself, one run per lane (2026-11-14, Agent SDK 0.3.322, $0.756 in all). The owner
+run moved the rule into a new `src/age.js`:
+
+```
+model               effort   passed   time   turns   tokens out   thinking   spent    per passing run
+Fable 5.2           medium   0 of 1   0:33   4       3,328        216        $0.412   none passed
+Fable 5.2 + owner   medium   1 of 1   0:37   4       4,097        293        $0.345   $0.345
+
+✗ Fable 5.2 medium run 1: fail: slip ok, old ok, copies 2: the rule is still in src/receipt.js and src/selfcheck.js
+```
+
+One run per lane only shows the option working. Use `--runs 4` or more before you trust the split on
+your own code.
 
 ### A real bug, Opus against Fable (week 24)
 

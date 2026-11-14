@@ -1,0 +1,122 @@
+{
+ "slip none.csv": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n3 x Oat milk 1L\n2 x Apples (6)\n1 x Dark chocolate\n--------------------------------\nItems: 6\n"
+ },
+ "slip party.csv": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n2 x Lager 4x440ml (ID 18+)\n3 x Croissant\n1 x Gin 70cl (ID 18+)\n1 x Oat milk 1L\n1 x Rolling papers (ID 18+)\n2 x Lottery ticket (ID 18+)\n2 x Oat milk 1L\n6 x Energy drink 250ml (ID 16+)\n1 x Breakfast tea 80\n--------------------------------\nItems: 19\nDriver: check ID at the door\n"
+ },
+ "slip shop.csv": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n1 x Sourdough loaf\n3 x Oat milk 1L\n2 x Apples (6)\n1 x Cheddar 400g\n2 x Ground coffee\n1 x Red wine 75cl (ID 18+)\n1 x Breakfast tea 80\n4 x Dark chocolate\n--------------------------------\nItems: 15\nDriver: check ID at the door\n"
+ },
+ "slip spec.csv": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n1 x Sourdough loaf\n2 x Red wine 75cl (ID 18+)\n4 x Energy drink 250ml (ID 16+)\n--------------------------------\nItems: 7\nDriver: check ID at the door\n"
+ },
+ "slip teen.csv": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n1 x Energy drink 250ml (ID 16+)\n2 x Dark chocolate\n--------------------------------\nItems: 3\nDriver: check ID at the door\n"
+ },
+ "slip with --date": {
+  "kind": "job",
+  "code": 0,
+  "stdout": "PICKING SLIP\n--------------------------------\n2 x Lager 4x440ml (ID 18+)\n3 x Croissant\n1 x Gin 70cl (ID 18+)\n1 x Oat milk 1L\n1 x Rolling papers (ID 18+)\n2 x Lottery ticket (ID 18+)\n2 x Oat milk 1L\n6 x Energy drink 250ml (ID 16+)\n1 x Breakfast tea 80\n--------------------------------\nItems: 19\nDriver: check ID at the door\n"
+ },
+ "receipt none.csv 2026-10-30": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nOat milk 1L x3             £5.55\nApples (6) x2              £4.80\nDark chocolate             £1.95\nOat milk 3 for 2          -£1.85\n--------------------------------\nTOTAL                     £10.45\nincl. VAT (20%)            £1.74\n"
+ },
+ "receipt none.csv 2026-11-10": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nOat milk 1L x3             £5.55\nApples (6) x2              £4.80\nDark chocolate             £1.95\nOat milk 3 for 2          -£1.85\n--------------------------------\nTOTAL                     £10.45\nincl. VAT (20%)            £1.74\n"
+ },
+ "selfcheck none.csv": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "Please pay\n"
+ },
+ "receipt party.csv 2026-10-30": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nLager 4x440ml x2          £12.00\nCroissant x3               £5.70\nGin 70cl                  £22.00\nOat milk 1L                £1.85\nRolling papers             £1.10\nLottery ticket x2          £4.00\nOat milk 1L x2             £3.70\nEnergy drink 250ml x6      £8.10\nBreakfast tea 80           £3.10\nOat milk 3 for 2          -£1.85\nAny 3 bakery for £5       -£0.70\nTea half price            -£1.55\n--------------------------------\nTOTAL                     £57.45\nincl. VAT (20%)            £9.58\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "receipt party.csv 2026-11-10": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nLager 4x440ml x2          £12.00\nCroissant x3               £5.70\nGin 70cl                  £22.00\nOat milk 1L                £1.85\nRolling papers             £1.10\nLottery ticket x2          £4.00\nOat milk 1L x2             £3.70\nEnergy drink 250ml x6      £8.10\nBreakfast tea 80           £3.10\nOat milk 3 for 2          -£1.85\nAny 3 bakery for £5       -£0.70\n--------------------------------\nTOTAL                     £59.00\nincl. VAT (20%)            £9.83\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "selfcheck party.csv": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "STAFF: Lager 4x440ml needs an ID check (18+)\nSTAFF: Gin 70cl needs an ID check (18+)\nSTAFF: Rolling papers needs an ID check (18+)\nSTAFF: Lottery ticket needs an ID check (18+)\nSTAFF: Energy drink 250ml needs an ID check (16+)\nPlease wait for a member of staff\n"
+ },
+ "receipt shop.csv 2026-10-30": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nSourdough loaf             £3.20\nOat milk 1L x3             £5.55\nApples (6) x2              £4.80\nCheddar 400g               £4.50\nGround coffee x2          £13.50\nRed wine 75cl              £8.50\nBreakfast tea 80           £3.10\nDark chocolate x4          £7.80\nOat milk 3 for 2          -£1.85\nChocolate 2 for £3        -£1.80\nCoffee 10% off            -£1.35\nTea half price            -£1.55\n--------------------------------\nTOTAL                     £44.40\nincl. VAT (20%)            £7.40\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "receipt shop.csv 2026-11-10": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nSourdough loaf             £3.20\nOat milk 1L x3             £5.55\nApples (6) x2              £4.80\nCheddar 400g               £4.50\nGround coffee x2          £13.50\nRed wine 75cl              £8.50\nBreakfast tea 80           £3.10\nDark chocolate x4          £7.80\nOat milk 3 for 2          -£1.85\nChocolate 2 for £3        -£1.80\nCoffee 10% off            -£1.35\n--------------------------------\nTOTAL                     £45.95\nincl. VAT (20%)            £7.66\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "selfcheck shop.csv": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "STAFF: Red wine 75cl needs an ID check (18+)\nPlease wait for a member of staff\n"
+ },
+ "receipt spec.csv 2026-10-30": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nSourdough loaf             £3.20\nRed wine 75cl x2          £17.00\nEnergy drink 250ml x4      £5.40\n--------------------------------\nTOTAL                     £25.60\nincl. VAT (20%)            £4.27\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "receipt spec.csv 2026-11-10": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nSourdough loaf             £3.20\nRed wine 75cl x2          £17.00\nEnergy drink 250ml x4      £5.40\n--------------------------------\nTOTAL                     £25.60\nincl. VAT (20%)            £4.27\n--------------------------------\nCHALLENGE 25: ID 18+ checked\n"
+ },
+ "selfcheck spec.csv": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "STAFF: Red wine 75cl needs an ID check (18+)\nSTAFF: Energy drink 250ml needs an ID check (16+)\nPlease wait for a member of staff\n"
+ },
+ "receipt teen.csv 2026-10-30": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nEnergy drink 250ml         £1.35\nDark chocolate x2          £3.90\nChocolate 2 for £3        -£0.90\n--------------------------------\nTOTAL                      £4.35\nincl. VAT (20%)            £0.73\n--------------------------------\nCHALLENGE 25: ID 16+ checked\n"
+ },
+ "receipt teen.csv 2026-11-10": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "          CORNER SHOP\n--------------------------------\nEnergy drink 250ml         £1.35\nDark chocolate x2          £3.90\nChocolate 2 for £3        -£0.90\n--------------------------------\nTOTAL                      £4.35\nincl. VAT (20%)            £0.73\n--------------------------------\nCHALLENGE 25: ID 16+ checked\n"
+ },
+ "selfcheck teen.csv": {
+  "kind": "old",
+  "code": 0,
+  "stdout": "STAFF: Energy drink 250ml needs an ID check (16+)\nPlease wait for a member of staff\n"
+ },
+ "error: bad --date": {
+  "kind": "old",
+  "code": 2,
+  "stdout": ""
+ },
+ "error: no cart": {
+  "kind": "old",
+  "code": 2,
+  "stdout": ""
+ },
+ "error: selfcheck no cart": {
+  "kind": "old",
+  "code": 2,
+  "stdout": ""
+ }
+}

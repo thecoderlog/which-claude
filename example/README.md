@@ -1,5 +1,10 @@
 # The races from the videos
 
+`owner/` is week 25's till with its age rule in two places, for `--prompt-lane`. It tests whether one
+sentence in the system prompt makes the agent clean up a copy it was never asked about. `checks/owner.mjs` passes
+only when the slip is right and the rule ends up in one file. The steps are in the main
+[README](../README.md#one-sentence-in-the-prompt-week-25).
+
 `msw/` is the real bug from week 24: Mock Service Worker's "`resetHandlers()` doesn't restart the
 generator", with a hidden test that also checks the cut-off generator is closed. Its own
 [README](msw/README.md) has the steps.

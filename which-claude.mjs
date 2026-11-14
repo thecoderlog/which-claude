@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { agent } from './agent.mjs';
 import { MODELS, PRICES_CHECKED, advisorCalls, costOf, displayName, modelId } from './prices.mjs';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // Errors that the next run would hit too: stop instead of paying for them
 const FATAL = ['authentication_failed', 'billing_error', 'account_on_hold', 'verification_required', 'model_not_found',
@@ -40,6 +40,15 @@ check command runs there: exit code 0 means the run passed.
                         with Opus as its advisor (Claude Code's advisor tool)
   --advisor <model>     also run every other model in --models with this one as its advisor:
                         --models haiku,opus --advisor opus runs Haiku, Opus and Haiku + Opus
+  --prompt-lane <name>=<text>
+                        also run every model in --models with <text> added to the end of the
+                        system prompt, as its own lane "<model> + <name>"; <name>=@<file> reads
+                        the text from a file. Give it more than once for more lanes:
+                        --models fable --prompt-lane owner="You are the owner and long-term
+                        maintainer of this codebase, and its design is up to you."
+  --claude-code-prompt  start every lane from Claude Code's own system prompt (its tools too)
+                        instead of which-claude's short one, so a line you test here behaves the
+                        way it would when you add it in Claude Code (--append-system-prompt)
   --runs <n>            runs per model (default: 3)
   --effort <level>      low, medium, high, xhigh or max for every model (default: each model's own)
   --sweep               run each model at every effort level, low to max, and print the lowest
@@ -65,6 +74,7 @@ try {
       effort: { type: 'string' }, 'max-dollars': { type: 'string', default: '5' }, timeout: { type: 'string', default: '15' },
       setup: { type: 'string' }, out: { type: 'string' }, 'task-file': { type: 'string' }, keep: { type: 'boolean', default: false }, advisor: { type: 'string' },
       sweep: { type: 'boolean', default: false }, climb: { type: 'boolean', default: false },
+      'prompt-lane': { type: 'string', multiple: true, default: [] }, 'claude-code-prompt': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
     },
   }));
@@ -96,6 +106,22 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(2);
 }
 
+// --prompt-lane name=text (or name=@file): the extra line(s) a prompt lane adds to the system prompt
+const promptLanes = opts['prompt-lane'].map(spec => {
+  const eq = spec.indexOf('=');
+  if (eq < 1) usage(`--prompt-lane "${spec}": give it as <name>=<text> or <name>=@<file>`);
+  const name = spec.slice(0, eq).trim();
+  let text = spec.slice(eq + 1);
+  if (!/^[\w.-]+$/.test(name)) usage(`--prompt-lane "${spec}": the name is one word (letters, digits, - . _)`);
+  if (text.startsWith('@')) {
+    try { text = readFileSync(text.slice(1), 'utf8'); } catch { usage(`--prompt-lane ${name}=${text}: can't read that file`); }
+  }
+  text = text.trim();
+  if (!text) usage(`--prompt-lane ${name}: the text is empty`);
+  return { name, text };
+});
+if (new Set(promptLanes.map(p => p.name)).size < promptLanes.length) usage('--prompt-lane: give each prompt lane its own name');
+
 // A lane is one model at one effort level, alone or with an advisor. --sweep gives every model all five levels, low to max.
 const given = opts.models.split(',').map(s => s.trim()).filter(Boolean);
 if (opts.advisor) {
@@ -119,11 +145,17 @@ const lanes = specs.map((spec, i) => {
   const model = modelId(name);
   const advisor = adv ? modelId(adv) : null;
   const short = id => displayName(id).replace(/ [\d.]+$/, '');  // "Opus 5.5" -> "Opus"
-  return { i, model, advisor, effort: effort || null, name: displayName(model) + (advisor ? ` + ${short(advisor)}` : ''), applied: null };
+  return { i, model, advisor, effort: effort || null, name: displayName(model) + (advisor ? ` + ${short(advisor)}` : ''), applied: null, prompt: null };
 });
+// every lane again with each prompt lane's text added, right after it (Fable 5.2, Fable 5.2 + owner, Opus 5.5, ...), so
+// each pair differs by that text only
+if (promptLanes.length) {
+  const withPrompts = lanes.flatMap(l => [l, ...promptLanes.map(p => ({ ...l, name: `${l.name} + ${p.name}`, prompt: p }))]);
+  lanes.splice(0, lanes.length, ...withPrompts.map((l, k) => ({ ...l, i: k })));
+}
 if (!lanes.length) usage('--models is empty');
 for (const l of lanes) {
-  const same = lanes.filter(x => x.name === l.name && x.effort === l.effort && x.advisor === l.advisor);
+  const same = lanes.filter(x => x.name === l.name && x.effort === l.effort && x.advisor === l.advisor && x.prompt === l.prompt);
   if (same.length > 1) l.name += ` #${same.indexOf(l) + 1}`;
 }
 
@@ -143,7 +175,7 @@ const sdkVersion = (() => {
 const info = {
   which_claude: VERSION, agent_sdk: sdkVersion, claude_code: null, node: process.version, platform: process.platform,
   started: new Date().toISOString(), finished: null, task, check: opts.check, setup: opts.setup ?? null, folder: cwd,
-  advisor: opts.advisor ?? null, runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
+  advisor: opts.advisor ?? null, prompt_lanes: promptLanes, system_prompt: opts['claude-code-prompt'] ? 'claude_code' : 'which-claude', runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
   order: opts.climb ? 'one run at a time; each model climbs from low, one level at a time, and stops at the first level that passes every run'
     : 'one run at a time; the lanes take turns, and the order moves on one place every round', prices_checked: PRICES_CHECKED,
   stopped: null,
@@ -247,6 +279,7 @@ async function runOne(r) {
   try {
     const messages = agent({
       task, model: lane.model, effort: lane.effort ?? undefined, advisor: lane.advisor ?? undefined, cwd: dir, abortController: ac,
+      append: lane.prompt?.text, claudeCodePrompt: opts['claude-code-prompt'],
       maxBudgetUsd: Math.max(0.01, MAX - spent()),
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `which-claude/${VERSION}` },
       stderr: data => appendFileSync(path.join(out, 'transcripts', `${tag}.stderr.txt`), data),
@@ -414,6 +447,7 @@ function laneSummary(lane) {
     tokens: { input: sum('input'), cache_read: sum('cache_read'), cache_write: sum('cache_write'), output: sum('output'), thinking: sum('thinking') },
     list_price_per_mtok: MODELS[lane.model] ? { in: MODELS[lane.model].in, out: MODELS[lane.model].out } : null,
     advisor: lane.advisor, advisor_name: lane.advisor ? displayName(lane.advisor) : null,
+    prompt_lane: lane.prompt?.name ?? null, prompt_text: lane.prompt?.text ?? null,
     ...(lane.advisor ? {
       advisor_calls_per_run: done.map(r => r.advisor?.calls.length ?? 0),
       median_advisor_calls: median(done.map(r => r.advisor?.calls.length ?? 0)),
@@ -422,17 +456,20 @@ function laneSummary(lane) {
   };
 }
 
-// For each model: the lowest effort level whose runs all passed (asked level; runs that didn't finish
-// don't count), with what that level cost per passing run
+// For each model (with the same advisor and prompt lane): the lowest effort level whose runs all passed (asked
+// level; runs that didn't finish don't count), with what that level cost per passing run. Only lanes that differ
+// in effort are compared: a plain lane and its prompt lane at the same level are two answers, not a ladder.
 function lowestPassing() {
   const out = [];
-  for (const model of [...new Set(lanes.map(l => l.model))]) {
-    const mine = lanes.filter(l => l.model === model && l.effort).map(laneSummary)
-      .sort((a, b) => EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(b.effort));
-    if (mine.length < 2) continue;
+  const key = l => [l.model, l.advisor ?? '', l.prompt?.name ?? ''].join('|');
+  for (const k of [...new Set(lanes.map(key))]) {
+    const group = lanes.filter(l => key(l) === k && l.effort);
+    const mine = group.map(laneSummary).sort((a, b) => EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(b.effort));
+    if (new Set(mine.map(s => s.effort)).size < 2) continue;
     const hit = mine.find(s => s.runs > 0 && s.passed === s.runs);
-    out.push({ model, name: displayName(model), effort: hit?.effort ?? null, runs: hit?.runs ?? 0,
-      cost_per_passing_run: hit?.cost_per_passing_run ?? null });
+    const first = group[0];
+    out.push({ model: first.model, name: first.name, prompt_lane: first.prompt?.name ?? null, effort: hit?.effort ?? null,
+      runs: hit?.runs ?? 0, cost_per_passing_run: hit?.cost_per_passing_run ?? null });
   }
   return out;
 }
@@ -452,8 +489,13 @@ function printHeader() {
   const head = shown.length > 3 ? [...shown.slice(0, 2), `… ${shown.length - 2} more lines${opts['task-file'] ? ` in ${opts['task-file']}` : ''}`] : shown;
   head.flatMap(l => wrap(l, c - 8)).forEach((line, i) => console.log(`${paint('2', i ? '     ' : 'task ')}  ${line}`));
   console.log(fit(`${paint('2', 'check')}  ${opts.check}`, c));
-  for (const l of lanes.filter(x => x.advisor)) {
+  for (const l of lanes.filter(x => x.advisor && !x.prompt)) {
     console.log(fit(paint('2', `adv    ${l.name}: ${displayName(l.model)} does the work and calls ${displayName(l.advisor)} when it decides to`), c));
+  }
+  if (opts['claude-code-prompt']) console.log(fit(paint('2', 'system Claude Code\'s own system prompt and tools, in every lane'), c));
+  for (const p of promptLanes) {
+    const first = p.text.split('\n').map(x => x.trim()).filter(Boolean);
+    console.log(fit(`${paint('2', 'prompt')} ${paint('2', `+ ${p.name}:`)} ${first[0]}${first.length > 1 ? paint('2', ` (+${first.length - 1} more lines)`) : ''}`, c));
   }
   console.log(fit(paint('2', opts.climb
     ? `climbing from low: ${RUNS} run${RUNS > 1 ? 's' : ''} per level, up one level at the first fail · stops at ${usd(MAX)}`
