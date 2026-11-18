@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// which-claude: run your own coding task on each Claude model, check every result with your own
-// command, and see how often each one passed, how long it took and what it really cost.
+// which-claude: run your own coding task on each Claude model (or on Claude Code and Codex side by side), check
+// every result with your own command, and see how often each one passed, how long it took and what it really cost.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -10,7 +10,8 @@ import { parseArgs } from 'node:util';
 import { agent } from './agent.mjs';
 import { MODELS, PRICES_CHECKED, advisorCalls, costOf, displayName, modelId } from './prices.mjs';
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
+const AGENTS = ['claude-code', 'codex'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // Errors that the next run would hit too: stop instead of paying for them
 const FATAL = ['authentication_failed', 'billing_error', 'account_on_hold', 'verification_required', 'model_not_found',
@@ -24,6 +25,8 @@ const MARK = {
   waiting: ['·', '2'], setup: ['…', '33'], running: ['●', '33'], checking: ['◌', '33'], pass: ['✓', '32'], fail: ['✗', '31'],
   timeout: ['✗', '31'], budget: ['✗', '31'], error: ['!', '31'], stopped: ['!', '31'], skipped: ['–', '2'],
 };
+// A silent fail: the agent finished on its own and said it was done, and your check failed anyway
+const isSilent = r => r.status === 'fail' && !r.timed_out && !r.crash && !r.api_error;
 
 const HELP = `which-claude ${VERSION}: run your coding task on each Claude model and compare them.
 
@@ -46,6 +49,15 @@ check command runs there: exit code 0 means the run passed.
                         the text from a file. Give it more than once for more lanes:
                         --models fable --prompt-lane owner="You are the owner and long-term
                         maintainer of this codebase, and its design is up to you."
+  --agents <list>       claude-code, codex or both, comma-separated: run the agents as they ship
+                        instead of model lanes. claude-code = the Agent SDK with Claude Code's own
+                        system prompt and tools, on the first model in --models (default opus);
+                        codex = OpenAI's Codex CLI (\`codex exec\`), with your own Codex config
+                        (~/.codex or CODEX_HOME: model, provider, key). --effort sets both
+  --codex-model <name>  the model Codex uses (default: the one in your Codex config)
+  --codex-price <in,cached,out>
+                        Codex's price per million tokens, to show its cost and count it against
+                        --max-dollars, like 1.25,0.125,10 (default: tokens only, no cost)
   --claude-code-prompt  start every lane from Claude Code's own system prompt (its tools too)
                         instead of which-claude's short one, so a line you test here behaves the
                         way it would when you add it in Claude Code (--append-system-prompt)
@@ -62,7 +74,11 @@ check command runs there: exit code 0 means the run passed.
   --out <folder>        where result.json, transcripts and diffs go (default: a new temp folder)
   --keep                keep the copies (default: each copy is deleted after its check)
 
-Needs ANTHROPIC_API_KEY. Every run is billed to that key; the cost of each run is shown.`;
+A fail where the agent finished and said it was done is marked "silent": the kind you'd only
+catch with a check of your own.
+
+Needs ANTHROPIC_API_KEY for Claude lanes (every run is billed to that key; the cost of each run is
+shown). A codex lane needs the codex command and whatever its own config needs (its key, billed there).`;
 
 // ------------------------------------------------------------------ options
 let opts, positionals;
@@ -75,6 +91,7 @@ try {
       setup: { type: 'string' }, out: { type: 'string' }, 'task-file': { type: 'string' }, keep: { type: 'boolean', default: false }, advisor: { type: 'string' },
       sweep: { type: 'boolean', default: false }, climb: { type: 'boolean', default: false },
       'prompt-lane': { type: 'string', multiple: true, default: [] }, 'claude-code-prompt': { type: 'boolean', default: false },
+      agents: { type: 'string' }, 'codex-model': { type: 'string' }, 'codex-price': { type: 'string' },
       help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
     },
   }));
@@ -101,10 +118,34 @@ if (opts.effort && !EFFORTS.includes(opts.effort)) usage(`--effort must be one o
 if (opts.sweep && opts.effort) usage('--sweep runs every effort level, so leave out --effort');
 if (opts.climb && opts.effort) usage('--climb picks the effort level itself, so leave out --effort');
 if (opts.climb && opts.sweep) usage('--climb and --sweep both pick the levels: use one of them');
-if (!process.env.ANTHROPIC_API_KEY) {
+// --agents claude-code,codex: the agents as they ship, side by side (one lane each)
+const agentList = opts.agents ? opts.agents.split(',').map(s => s.trim()).filter(Boolean) : null;
+if (agentList) {
+  for (const a of agentList) if (!AGENTS.includes(a)) usage(`--agents ${a}: one of ${AGENTS.join(', ')}`);
+  if (!agentList.length) usage('--agents is empty');
+  if (new Set(agentList).size < agentList.length) usage('--agents: give each agent once');
+  for (const [k, why] of [['advisor', '--advisor'], ['sweep', '--sweep'], ['climb', '--climb']]) if (opts[k]) usage(`${why} works on model lanes; leave it out with --agents`);
+  if (opts['prompt-lane'].length) usage('--prompt-lane works on model lanes; leave it out with --agents');
+}
+const codexPrice = (() => {
+  if (!opts['codex-price']) return null;
+  const p = opts['codex-price'].split(',').map(Number);
+  if (p.length !== 3 || p.some(x => !(x >= 0))) usage('--codex-price: three numbers, in,cached,out per million tokens, like 1.25,0.125,10');
+  return { in: p[0], cached: p[1], out: p[2] };
+})();
+const needsKey = !agentList || agentList.includes('claude-code');
+if (needsKey && !process.env.ANTHROPIC_API_KEY) {
   console.error('which-claude needs an API key: set ANTHROPIC_API_KEY (Claude Console > API keys). Every run is billed to it.');
   process.exit(2);
 }
+const codexVersion = agentList?.includes('codex') ? (() => {
+  const v = spawnSync('codex', ['--version'], { encoding: 'utf8' });
+  if (v.error || v.status !== 0) {
+    console.error('which-claude: --agents codex needs the codex command (npm i -g @openai/codex), set up the way you use it.');
+    process.exit(2);
+  }
+  return (v.stdout || '').trim().replace(/^codex-cli\s*/, '');
+})() : null;
 
 // --prompt-lane name=text (or name=@file): the extra line(s) a prompt lane adds to the system prompt
 const promptLanes = opts['prompt-lane'].map(spec => {
@@ -123,7 +164,7 @@ const promptLanes = opts['prompt-lane'].map(spec => {
 if (new Set(promptLanes.map(p => p.name)).size < promptLanes.length) usage('--prompt-lane: give each prompt lane its own name');
 
 // A lane is one model at one effort level, alone or with an advisor. --sweep gives every model all five levels, low to max.
-const given = opts.models.split(',').map(s => s.trim()).filter(Boolean);
+const given = agentList ? [] : opts.models.split(',').map(s => s.trim()).filter(Boolean);
 if (opts.advisor) {
   const adv = modelId(opts.advisor);
   if (!MODELS[adv] && !adv.startsWith('claude-')) usage(`--advisor ${opts.advisor}: not a model name or id`);
@@ -153,6 +194,15 @@ if (promptLanes.length) {
   const withPrompts = lanes.flatMap(l => [l, ...promptLanes.map(p => ({ ...l, name: `${l.name} + ${p.name}`, prompt: p }))]);
   lanes.splice(0, lanes.length, ...withPrompts.map((l, k) => ({ ...l, i: k })));
 }
+if (agentList) {
+  // one lane per agent: Claude Code on the first model in --models, Codex on its own config's model (or --codex-model)
+  const claudeModel = modelId(opts.models.split(',')[0].trim().split(':')[0] || 'opus');
+  for (const a of agentList) {
+    lanes.push(a === 'codex'
+      ? { i: lanes.length, agent: 'codex', model: opts['codex-model'] ?? null, advisor: null, effort: opts.effort ?? null, name: `Codex${opts['codex-model'] ? ` · ${opts['codex-model']}` : ''}`, applied: null, prompt: null }
+      : { i: lanes.length, agent: 'claude-code', model: claudeModel, advisor: null, effort: opts.effort ?? null, name: `Claude Code · ${displayName(claudeModel)}`, applied: null, prompt: null });
+  }
+}
 if (!lanes.length) usage('--models is empty');
 for (const l of lanes) {
   const same = lanes.filter(x => x.name === l.name && x.effort === l.effort && x.advisor === l.advisor && x.prompt === l.prompt);
@@ -173,9 +223,9 @@ const sdkVersion = (() => {
   } catch { return 'unknown'; }
 })();
 const info = {
-  which_claude: VERSION, agent_sdk: sdkVersion, claude_code: null, node: process.version, platform: process.platform,
+  which_claude: VERSION, agent_sdk: sdkVersion, claude_code: null, codex: codexVersion, agents: agentList, codex_price_per_mtok: codexPrice, node: process.version, platform: process.platform,
   started: new Date().toISOString(), finished: null, task, check: opts.check, setup: opts.setup ?? null, folder: cwd,
-  advisor: opts.advisor ?? null, prompt_lanes: promptLanes, system_prompt: opts['claude-code-prompt'] ? 'claude_code' : 'which-claude', runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
+  advisor: opts.advisor ?? null, prompt_lanes: promptLanes, system_prompt: opts['claude-code-prompt'] || agentList ? 'claude_code' : 'which-claude', runs_per_model: RUNS, sweep: opts.sweep, climb: opts.climb, max_dollars: MAX, timeout_minutes: Number(opts.timeout), effort: opts.effort ?? null,
   order: opts.climb ? 'one run at a time; each model climbs from low, one level at a time, and stops at the first level that passes every run'
     : 'one run at a time; the lanes take turns, and the order moves on one place every round', prices_checked: PRICES_CHECKED,
   stopped: null,
@@ -272,6 +322,7 @@ async function runOne(r) {
   r.now = 'starting';
   if (lane.advisor) r.advisor = { model: lane.advisor, calls: [], seen: 0 };
   const transcript = path.join(out, 'transcripts', `${tag}.jsonl`);
+  if (lane.agent === 'codex') return finishRun(r, lane, dir, head, tag, await runCodex(r, lane, dir, tag, transcript));
   const ac = new AbortController();
   current = { r, ac };
   const timer = setTimeout(() => { r.timed_out = true; ac.abort(); }, TIMEOUT_MS);
@@ -279,7 +330,7 @@ async function runOne(r) {
   try {
     const messages = agent({
       task, model: lane.model, effort: lane.effort ?? undefined, advisor: lane.advisor ?? undefined, cwd: dir, abortController: ac,
-      append: lane.prompt?.text, claudeCodePrompt: opts['claude-code-prompt'],
+      append: lane.prompt?.text, claudeCodePrompt: opts['claude-code-prompt'] || lane.agent === 'claude-code',
       maxBudgetUsd: Math.max(0.01, MAX - spent()),
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `which-claude/${VERSION}` },
       stderr: data => appendFileSync(path.join(out, 'transcripts', `${tag}.stderr.txt`), data),
@@ -373,7 +424,12 @@ async function runOne(r) {
     delete r.advisor.seen;
   }
 
-  r.fatal = Boolean((r.api_error && FATAL.includes(r.api_error)) || [401, 403].includes(r.result?.api_error_status)
+  return finishRun(r, lane, dir, head, tag);
+}
+
+// After the agent: decide the run with your check, keep the diff, delete the copy
+async function finishRun(r, lane, dir, head, tag) {
+  r.fatal ??= Boolean((r.api_error && FATAL.includes(r.api_error)) || [401, 403].includes(r.result?.api_error_status)
     || (r.crash && !r.result));
   if (interrupted) {
     r.status = 'stopped';
@@ -382,13 +438,73 @@ async function runOne(r) {
   } else {
     r.status = 'checking';
     r.now = `checking: ${opts.check}`;
-    const c = await sh(opts.check, dir, TIMEOUT_MS, { ANTHROPIC_API_KEY: undefined });
+    const c = await sh(opts.check, dir, TIMEOUT_MS, { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, AZURE_OPENAI_API_KEY: undefined });
     const lines = c.out.trim().split('\n').map(l => l.trim()).filter(Boolean);
     r.check = { exit_code: c.code, pass: c.code === 0, ms: c.ms, last_line: lines.at(-1) ?? '', output: c.out.slice(-20_000) };
     r.status = c.code === 0 ? 'pass' : r.timed_out ? 'timeout' : r.result?.subtype === 'error_max_budget_usd' ? 'budget' : 'fail';
+    r.silent = isSilent(r);
   }
   r.diff = diff(dir, head, path.join(out, 'diffs', `${tag}.patch`));
   if (!opts.keep) rmSync(path.dirname(dir), { recursive: true, force: true, maxRetries: 3 });
+}
+
+// A codex lane: `codex exec` in the copy, its JSON events read as they come. Its own config decides the model,
+// provider and key (~/.codex or CODEX_HOME); which-claude only adds the sandbox (this folder, no network), no approvals
+// and no web search, so it works under the same rules as a Claude lane.
+async function runCodex(r, lane, dir, tag, transcript) {
+  const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'approval_policy="never"',
+    '-c', 'web_search="disabled"', '-c', 'sandbox_workspace_write.network_access=false'];
+  if (lane.model) args.push('--model', lane.model);
+  if (lane.effort) args.push('-c', `model_reasoning_effort="${lane.effort}"`);
+  args.push(task);
+  const usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  let last = null;
+  await new Promise(resolve => {
+    const env = { ...process.env, CI: '1' };
+    delete env.ANTHROPIC_API_KEY;
+    const p = spawn('codex', args, { cwd: dir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    current = { r, ac: { abort: () => { try { process.kill(-p.pid, 'SIGTERM'); } catch { p.kill('SIGTERM'); } } } };
+    const timer = setTimeout(() => { r.timed_out = true; current?.ac.abort(); }, TIMEOUT_MS);
+    let buf = '';
+    p.stdout.on('data', d => {
+      buf += d;
+      let k;
+      while ((k = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, k).trim();
+        buf = buf.slice(k + 1);
+        if (!line) continue;
+        appendFileSync(transcript, line + '\n');
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        const t = Date.now() - r.t0;
+        const it = ev.item ?? {};
+        if (ev.type === 'item.started' && it.type === 'command_execution') { r.now = `exec  ${String(it.command).split('\n')[0]}`; }
+        if (ev.type === 'item.completed') {
+          if (it.type === 'command_execution') r.events.push({ t, tool: 'exec', input: String(it.command).split('\n')[0].slice(0, 200), exit: it.exit_code });
+          if (it.type === 'file_change') { r.events.push({ t, tool: 'edit', input: (it.changes ?? []).map(c => c.path ? path.relative(dir, c.path) : '').join(' ') }); r.now = 'edit'; }
+          if (it.type === 'agent_message' && it.text) { last = it.text; r.events.push({ t, text: it.text.slice(0, 500) }); }
+        }
+        if (ev.type === 'turn.completed' && ev.usage) {
+          usage.input += ev.usage.input_tokens ?? 0;
+          usage.cached += ev.usage.cached_input_tokens ?? 0;
+          usage.output += ev.usage.output_tokens ?? 0;
+          usage.reasoning += ev.usage.reasoning_output_tokens ?? 0;
+          if (codexPrice) r.running_usd = ((usage.input - usage.cached) * codexPrice.in + usage.cached * codexPrice.cached + usage.output * codexPrice.out) / 1e6;
+        }
+        if (ev.type === 'turn.failed' || ev.type === 'error') r.crash = String(ev.error?.message ?? ev.message ?? 'codex error').slice(0, 500);
+      }
+    });
+    p.stderr.on('data', d => appendFileSync(path.join(out, 'transcripts', `${tag}.stderr.txt`), d));
+    p.on('error', e => { clearTimeout(timer); r.crash = String(e).slice(0, 500); resolve(); });
+    p.on('close', code => { clearTimeout(timer); r.exit = code; resolve(); });
+  });
+  current = null;
+  r.wall_ms = Date.now() - r.t0;
+  r.cost_usd = codexPrice ? round(r.running_usd ?? 0, 6) : 0;
+  r.cost_is_estimate = Boolean(codexPrice);
+  r.tokens = { input: usage.input - usage.cached, cache_read: usage.cached, cache_write: 0, output: usage.output, thinking: usage.reasoning };
+  r.result = { agent: 'codex', summary: last ? last.slice(0, 2000) : null, num_turns: null };
+  r.fatal = Boolean(r.crash && !last);
 }
 
 // --climb: a run is skipped once its level has failed a run, or once a lower level of its model held
@@ -444,6 +560,7 @@ function laneSummary(lane) {
     median_output_tokens: median(done.map(r => r.tokens?.output).filter(Number.isFinite)),
     median_thinking_tokens: median(done.map(r => r.tokens?.thinking).filter(Number.isFinite)),
     spent_usd: round(cost, 6), cost_per_passing_run: passed ? round(cost / passed, 6) : null,
+    agent: lane.agent ?? null, silent_fails: done.filter(r => r.silent).length, cost_known: !(lane.agent === 'codex' && !codexPrice),
     tokens: { input: sum('input'), cache_read: sum('cache_read'), cache_write: sum('cache_write'), output: sum('output'), thinking: sum('thinking') },
     list_price_per_mtok: MODELS[lane.model] ? { in: MODELS[lane.model].in, out: MODELS[lane.model].out } : null,
     advisor: lane.advisor, advisor_name: lane.advisor ? displayName(lane.advisor) : null,
@@ -493,13 +610,14 @@ function printHeader() {
     console.log(fit(paint('2', `adv    ${l.name}: ${displayName(l.model)} does the work and calls ${displayName(l.advisor)} when it decides to`), c));
   }
   if (opts['claude-code-prompt']) console.log(fit(paint('2', 'system Claude Code\'s own system prompt and tools, in every lane'), c));
+  if (agentList) console.log(fit(paint('2', `agents ${agentList.map(a => a === 'codex' ? `Codex ${codexVersion} (your Codex config)` : 'Claude Code (its own system prompt and tools, Agent SDK)').join(' · ')}`), c));
   for (const p of promptLanes) {
     const first = p.text.split('\n').map(x => x.trim()).filter(Boolean);
     console.log(fit(`${paint('2', 'prompt')} ${paint('2', `+ ${p.name}:`)} ${first[0]}${first.length > 1 ? paint('2', ` (+${first.length - 1} more lines)`) : ''}`, c));
   }
   console.log(fit(paint('2', opts.climb
     ? `climbing from low: ${RUNS} run${RUNS > 1 ? 's' : ''} per level, up one level at the first fail · stops at ${usd(MAX)}`
-    : `${RUNS} run${RUNS > 1 ? 's' : ''} per ${lanes.some(l => l.effort) && new Set(lanes.map(l => l.model)).size < lanes.length ? 'lane' : 'model'}, one at a time, taking turns · stops at ${usd(MAX)}`), c));
+    : `${RUNS} run${RUNS > 1 ? 's' : ''} per ${agentList ? 'agent' : lanes.some(l => l.effort) && new Set(lanes.map(l => l.model)).size < lanes.length ? 'lane' : 'model'}, one at a time, taking turns · stops at ${usd(MAX)}`), c));
   console.log();
 }
 
@@ -528,7 +646,7 @@ function table(c) {
   if (left + RUNS * 14 > c) style = 'short';
   if (left + RUNS * 9 > c) style = 'mark';
   const cellW = { full: 14, short: 9, mark: 3 }[style];
-  const head = [pad('model', nameW), pad('effort', effW), ...Array.from({ length: RUNS }, (_, i) => pad(style === 'mark' ? `${i + 1}` : `run ${i + 1}`, cellW - 2))];
+  const head = [pad(agentList ? 'agent' : 'model', nameW), pad('effort', effW), ...Array.from({ length: RUNS }, (_, i) => pad(style === 'mark' ? `${i + 1}` : `run ${i + 1}`, cellW - 2))];
   const lines = [fit(paint('2', head.join('  ')), c)];
   for (const l of lanes) {
     const cells = [];
@@ -547,13 +665,16 @@ function cell(r, style, w) {
   const ms = r.wall_ms ?? Date.now() - (r.t0 ?? Date.now());
   const cost = r.cost_usd ?? r.running_usd ?? 0;
   if (r.status === 'setup') return shown('… setup');
-  return shown(style === 'short' ? `${mark} ${usd(cost)}` : `${mark} ${clock(ms)} ${usd(cost)}`);
+  const money = lanes[r.lane].agent === 'codex' && !codexPrice ? '' : ` ${usd(cost)}`;
+  if (r.silent) return shown(style === 'short' ? `${mark} silent` : `${mark} ${clock(ms)} silent`);
+  return shown(style === 'short' ? `${mark}${money}` : `${mark} ${clock(ms)}${money}`);
 }
 
 function printRun(r) {
   const l = lanes[r.lane];
   console.log([`run ${r.seq} of ${runs.length}`, l.name, effortOf(l.effort, r.effort_applied),
-    `${MARK[r.status][0]} ${clock(r.wall_ms ?? 0)} ${usd(r.cost_usd ?? 0)}`, `${r.result?.num_turns ?? '?'} turns`,
+    `${MARK[r.status][0]} ${clock(r.wall_ms ?? 0)}${l.agent === 'codex' && !codexPrice ? '' : ` ${usd(r.cost_usd ?? 0)}`}${r.silent ? ' silent' : ''}`,
+    l.agent === 'codex' ? `${r.events?.filter(e => e.tool === 'exec').length ?? 0} commands` : `${r.result?.num_turns ?? '?'} turns`,
     r.check?.last_line || r.status].join(' · '));
 }
 
@@ -562,16 +683,18 @@ function printScoreboard() {
   const rows = lanes.map(laneSummary).filter(s => !opts.climb || s.runs > 0);
   const withAdv = rows.some(s => s.advisor);
   // with an advisor lane, the token columns make room for the advisor's (the tokens table below still has them)
-  const head = ['model', 'effort', 'passed', 'time', 'turns', ...(withAdv ? ['adv calls', 'adv $'] : ['tokens out', 'thinking']), 'spent', 'per passing run'];
+  const head = [agentList ? 'agent' : 'model', 'effort', 'passed', ...(agentList ? ['silent fails'] : []), 'time', ...(agentList ? [] : ['turns']), ...(withAdv ? ['adv calls', 'adv $'] : ['tokens out', 'thinking']), 'spent', 'per passing run'];
   const body = rows.map(s => [s.name, effortOf(s.effort, s.effort_applied),
-    `${s.passed} of ${s.runs}`, s.median_seconds == null ? '-' : clock(s.median_seconds * 1000), s.median_turns ?? '-',
+    `${s.passed} of ${s.runs}`, ...(agentList ? [String(s.silent_fails)] : []), s.median_seconds == null ? '-' : clock(s.median_seconds * 1000), ...(agentList ? [] : [s.median_turns ?? '-']),
     ...(withAdv ? (s.advisor ? [s.advisor_calls_per_run.join(' ') || '-', usd(s.advisor_usd)] : ['-', '-'])
-      : [s.median_output_tokens == null ? '-' : num(s.median_output_tokens), s.median_thinking_tokens == null ? '-' : num(s.median_thinking_tokens)]), usd(s.spent_usd),
-    s.cost_per_passing_run == null ? 'none passed' : usd(s.cost_per_passing_run)]);
+      : [s.median_output_tokens == null ? '-' : num(s.median_output_tokens), s.median_thinking_tokens == null ? '-' : num(s.median_thinking_tokens)]),
+    s.cost_known ? usd(s.spent_usd) : 'tokens only',
+    s.cost_per_passing_run == null ? 'none passed' : s.cost_known ? usd(s.cost_per_passing_run) : '-']);
   console.log();
   printColumns(head, body, c, rows.map((_, i) => laneColor(i)));
   console.log(fit(paint('2', withAdv ? 'medians · adv calls: advisor calls in each run · spent includes the advisor · per passing run = spent ÷ runs that passed'
-    : 'medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed'), c));
+    : 'medians · thinking is inside tokens out · per passing run = spent ÷ runs that passed'
+      + (agentList ? ' · silent fail = the agent said it was done, your check said no' : '')), c));
   for (const s of rows.filter(x => x.advisor && x.runs > 0 && x.advisor_calls_per_run.every(n => n === 0))) {
     console.log(fit(paint('31', `▸ ${s.name}: no run called the advisor. Claude Code leaves it off without a word if the API refuses the pairing `
       + 'or if feature-flag fetching is off (DISABLE_TELEMETRY and the like)'), c));
@@ -592,7 +715,7 @@ function printScoreboard() {
   console.log();
   const thead = ['tokens, all runs', 'new in', 'cache read', 'cache write', 'out', 'of it thinking', 'spent'];
   printColumns(thead, rows.map(s => [laneLabel(s), num(s.tokens.input), num(s.tokens.cache_read), num(s.tokens.cache_write),
-    num(s.tokens.output), num(s.tokens.thinking), usd(s.spent_usd)]), c, rows.map((_, i) => laneColor(i)));
+    num(s.tokens.output), num(s.tokens.thinking), s.cost_known ? usd(s.spent_usd) : 'tokens only']), c, rows.map((_, i) => laneColor(i)));
 
   const bad = runs.filter(r => ['fail', 'timeout', 'budget', 'error', 'stopped'].includes(r.status));
   if (bad.length) {
@@ -602,12 +725,12 @@ function printScoreboard() {
         : r.status === 'budget' ? 'stopped at the money cap'
         : r.check ? r.check.last_line || `exit code ${r.check.exit_code}`
         : r.api_error ? `API error (${r.api_error}), not counted` : r.crash ?? r.status;
-      console.log(fit(`${paint('31', '✗')} ${laneLabel(lanes[r.lane])} run ${r.n}: ${why}`, c));
+      console.log(fit(`${paint('31', '✗')} ${laneLabel(lanes[r.lane])} run ${r.n}: ${r.silent ? 'silent fail, it said it was done; ' : ''}${why}`, c));
     }
   }
   console.log();
   if (info.stopped) console.log(fit(paint('31', `stopped early: ${info.stopped}`), c));
-  console.log(fit(`spent ${usd(spent())} in all (the Agent SDK's count; your Console bill is the real one)`, c));
+  console.log(fit(`spent ${usd(spent())} in all (the Agent SDK's count${agentList?.includes('codex') ? codexPrice ? ', Codex from its tokens at --codex-price' : '; Codex not counted: give --codex-price' : ''}; your Console bill is the real one)`, c));
   console.log(`results: ${path.join(out, 'result.json')}`);
 }
 

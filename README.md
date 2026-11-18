@@ -12,6 +12,9 @@ see what that line really changes on your task. And it can try one model at ever
 every run, or climb from low one level at a time and stop at the first level that holds (`--climb`), so
 you only pay for the levels you need.
 
+From 0.7.0 it can also put Claude Code and OpenAI's Codex side by side on the same task
+(`--agents claude-code,codex`), each running as it ships.
+
 ## Why
 
 The price list says Opus 5.5 costs twice what Sonnet 5.5 costs per token ($4 and $2 per million input
@@ -65,6 +68,9 @@ the best check is one it never sees. Keep it outside the folder:
 | `--setup <command>` | none | runs in each copy before the agent, like `npm ci`; not timed or billed |
 | `--out <folder>` | a new temp folder | where the results go |
 | `--keep` | off | keep the copies, to look at what each run did |
+| `--agents <list>` | none | `claude-code`, `codex` or both: runs the agents as they ship instead of model lanes (see below) |
+| `--codex-model <name>` | your Codex config's | the model Codex uses |
+| `--codex-price <in,cached,out>` | tokens only | Codex's price per million tokens, so its runs show a cost and count against `--max-dollars` |
 
 ## What you get
 
@@ -87,6 +93,26 @@ CLAUDE.md, settings files, MCP servers, plugins or skills. Only `model` and `eff
 lanes, plus a prompt lane's extra text (below). With `--claude-code-prompt` every lane starts from
 Claude Code's own system prompt and tools instead (the Agent SDK's `claude_code` preset), still with
 nothing from your own setup.
+
+## Claude Code against Codex
+
+`--agents claude-code,codex` gives each agent one lane, taking turns like any other lanes.
+`claude-code` is the Agent SDK with Claude Code's own system prompt and tools, on the first model in
+`--models` (Opus 5.5 if you leave it out). `codex` runs `codex exec` with your own Codex config
+(install it with `npm i -g @openai/codex` and sign in, or point it at your own provider), in a
+workspace-write sandbox with no network, no web search and no approval prompts. Your check runs after
+each agent the same way, without your API keys in its environment.
+
+```
+which-claude "Fix the date parsing bug in src/dates.js" --check "node ~/checks/dates.mjs" \
+  --agents claude-code,codex --models opus --effort medium --runs 3 --codex-price 1.25,0.125,10
+```
+
+Codex reports tokens, not money. Without `--codex-price` its lane shows tokens only and doesn't count
+against `--max-dollars`; with it, cost is worked out from Codex's own token counts at the price you
+give. A **silent fail** is a run where the agent finished on its own, said it was done, and your check
+failed anyway. The scoreboard counts them for every lane, because they're the fails you'd only catch
+with a check of your own.
 
 ## Prompt lanes
 
@@ -145,6 +171,31 @@ Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model
 
 `example/` has a small till app in several versions and one real bug from an open source library, each
 with a hidden check the agent never sees.
+
+### Claude Code against Codex on a big order (week 26)
+
+The same `c4` till as the effort staircase below: offers, returns, weighed items and a £2 voucher, with
+a spec that never mentions size. `checks/bigorders.mjs` wants four big carts priced right in 2 seconds.
+
+```
+cd example/staircase/c4
+git init -q && git add -A && git commit -qm "the till"
+which-claude "Apply this week's offers and add returns, weighed items and the voucher, as described in docs/offers.md, docs/returns.md, docs/weighed.md and docs/voucher.md. Add tests." \
+  --check "node $PWD/../checks/staircase.mjs c4 && node $PWD/../checks/bigorders.mjs c4" \
+  --agents claude-code,codex --models opus --effort medium --runs 3 --codex-price 10,1,50 --max-dollars 20 --timeout 30
+```
+
+In the video (Claude Code on a Max plan, Opus 5.5 and Fable 5.2 at medium; Codex CLI 0.169.0 with
+GPT-6 Astra on Azure at medium and high) every run passed the written spec: Claude Code 15 of 15,
+Codex 10 of 10. On the big carts Claude Code passed 14 of 15 and Codex 5 of 10, and every run that
+failed had said its own tests pass. One line in the repo's `AGENTS.md` ("Before you say a change is
+done, run it on an input much bigger than any example in the docs and make sure it still finishes
+quickly.") took Codex to 5 of 5, at about three times the time.
+
+which-claude 0.7.0 ran that command once per agent (`--runs 1 --max-dollars 6`, 2026-11-17, Claude Code
+on an API key, Codex on Azure at the price above). Claude Code with Opus 5.5 passed in 6:26 for $1.14.
+Codex said it was done after 4:36 and failed all 4 big orders, a silent fail, for $1.17 from its own
+token counts. One run each shows you what the output looks like, and it's too few to rank the agents.
 
 ### One sentence in the prompt (week 25)
 
